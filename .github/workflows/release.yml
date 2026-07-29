@@ -1,0 +1,53 @@
+name: Release artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            artifact: darwin-arm64
+          - os: ubuntu-24.04
+            artifact: linux-x64
+          - os: ubuntu-24.04-arm
+            artifact: linux-arm64
+          - os: windows-2025
+            artifact: windows-x64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Package plugin
+        run: npm pack --workspace @atbash/codex-plugin
+
+      - name: Upload plugin package
+        uses: actions/upload-artifact@v4
+        with:
+          name: atbash-codex-plugin-${{ matrix.artifact }}
+          path: atbash-codex-plugin-*.tgz
+          if-no-files-found: error

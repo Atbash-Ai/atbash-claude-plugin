@@ -1,0 +1,19 @@
+{
+  "description": "Atbash evaluates supported Codex tool calls before execution.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PLUGIN_ROOT/dist/pre-tool-use.cjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\dist\\pre-tool-use.cjs\"",
+            "timeout": 35,
+            "statusMessage": "Checking action with Atbash"
+          }
+        ]
+      }
+    ]
+  }
+}

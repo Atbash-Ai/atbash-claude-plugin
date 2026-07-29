@@ -1,0 +1,21 @@
+{
+  "name": "atbash",
+  "version": "0.1.0+codex.20260723085746",
+  "description": "Guards supported Codex tool calls with Atbash safety judgments before execution.",
+  "author": {
+    "name": "Atbash AI",
+    "url": "https://atbash.ai"
+  },
+  "homepage": "https://atbash.ai",
+  "repository": "https://github.com/Atbash-Ai/atbash_chatgpt_plugin",
+  "keywords": ["atbash", "codex", "safety", "policy", "guardrails"],
+  "interface": {
+    "displayName": "Atbash Safety",
+    "shortDescription": "Policy checks before supported Codex tools run.",
+    "longDescription": "Atbash evaluates supported Codex tool calls against operator-defined safety policy before execution.",
+    "developerName": "Atbash AI",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": ["Verify that Atbash safety is active for this task."]
+  }
+}
