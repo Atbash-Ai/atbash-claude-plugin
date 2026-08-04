@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Updated the exact npm dependency to `@atbash/sdk@0.6.1`.
+- Added SDK organization-based chain resolution for Private and Swarm judgment requests.
+
 ## 0.1.0 - 2026-07-22
 
 - Added the activatable `atbash` Codex plugin and repo-local marketplace.

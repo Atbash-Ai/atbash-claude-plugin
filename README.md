@@ -1,6 +1,6 @@
 # Atbash Codex Plugin
 
-Atbash Safety is an activatable Codex plugin that evaluates supported tool calls through `@atbash/sdk@0.6.0` before Codex executes them. It uses a catch-all `PreToolUse` hook, so enforcement is mechanical: the model does not decide when to call Atbash.
+Atbash Safety is an activatable Codex plugin that evaluates supported tool calls through `@atbash/sdk@0.6.1` before Codex executes them. It uses a catch-all `PreToolUse` hook, so enforcement is mechanical: the model does not decide when to call Atbash.
 
 While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a canonical SDK result of `allow: true` with verdict `ALLOW` continues.
 

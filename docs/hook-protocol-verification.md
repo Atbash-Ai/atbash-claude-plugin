@@ -3,7 +3,7 @@
 - Verification date: 2026-07-22
 - Codex build: `codex-cli 0.144.0-alpha.4`
 - Plugin: `atbash` `0.1.0`
-- SDK: `@atbash/sdk@0.6.0`
+- SDK: `@atbash/sdk@0.6.1`
 
 ## Verified input
 

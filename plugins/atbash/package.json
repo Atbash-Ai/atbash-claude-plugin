@@ -21,6 +21,6 @@
     "status": "node dist/status.cjs"
   },
   "dependencies": {
-    "@atbash/sdk": "0.6.0"
+    "@atbash/sdk": "0.6.1"
   }
 }

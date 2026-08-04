@@ -5,7 +5,7 @@
 - Repository: `Atbash-Ai/atbash_chatgpt_plugin`
 - Plugin identifier: `atbash`
 - Display name: `Atbash Safety`
-- SDK: npm package `@atbash/sdk@0.6.0`
+- SDK: npm package `@atbash/sdk@0.6.1`
 - Implementation status: Complete; protocol and activation evidence recorded in `hook-protocol-verification.md`
 
 ## 1. Purpose
@@ -97,7 +97,7 @@ This plugin is a strong lifecycle guardrail, not a complete security boundary. T
 
 ## 6. Published Atbash SDK contract
 
-The implementation will use exactly `@atbash/sdk@0.6.0` from npm for v1. The published package requires Node.js 18 or newer and is server-side only.
+The implementation uses exactly `@atbash/sdk@0.6.1` from npm for v1. The published package requires Node.js 18 or newer and is server-side only.
 
 ### Required enforcement APIs
 

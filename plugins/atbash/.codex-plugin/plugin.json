@@ -1,6 +1,6 @@
 {
   "name": "atbash",
-  "version": "0.1.0+codex.20260723085746",
+  "version": "0.1.0+codex.20260729150534",
   "description": "Guards supported Codex tool calls with Atbash safety judgments before execution.",
   "author": {
     "name": "Atbash AI",
