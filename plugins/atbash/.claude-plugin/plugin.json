@@ -1,0 +1,12 @@
+{
+  "name": "atbash",
+  "version": "0.3.3",
+  "description": "Automatically guards Claude Code tool calls with fail-closed Atbash safety judgments and provides secure local setup guidance.",
+  "author": {
+    "name": "Atbash AI",
+    "url": "https://atbash.ai"
+  },
+  "homepage": "https://atbash.ai",
+  "repository": "https://github.com/Atbash-Ai/atbash_chatgpt_plugin",
+  "keywords": ["atbash", "safety", "security", "policy", "guardrails", "hooks"]
+}

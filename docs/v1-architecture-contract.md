@@ -5,7 +5,7 @@
 - Repository: `Atbash-Ai/atbash_chatgpt_plugin`
 - Plugin identifier: `atbash`
 - Display name: `Atbash Safety`
-- SDK: npm package `@atbash/sdk@0.6.1`
+- SDK: npm package `@atbash/sdk@0.6.2`
 - Implementation status: Complete; protocol and activation evidence recorded in `hook-protocol-verification.md`
 
 ## 1. Purpose
@@ -29,6 +29,7 @@ atbash_chatgpt_plugin/
 ├── plugins/atbash/
 │   ├── .codex-plugin/plugin.json
 │   ├── hooks/hooks.json
+│   ├── runtime/
 │   ├── src/
 │   ├── tests/
 │   ├── package.json
@@ -37,13 +38,15 @@ atbash_chatgpt_plugin/
 └── README.md
 ```
 
-The marketplace entry will use:
+The marketplace entry uses:
 
 - plugin name `atbash`;
 - source path `./plugins/atbash`;
 - installation policy `AVAILABLE`;
 - authentication policy `ON_INSTALL`; and
-- category `Productivity`.
+- category `Security`.
+
+The Git snapshot includes the generated JavaScript bundle and all native targets published by the pinned npm SDK under `plugins/atbash/runtime/`. A user can therefore add the Git marketplace and install the plugin without cloning the repository, installing npm dependencies, or compiling on the target machine.
 
 The plugin will rely on Codex's default discovery of `hooks/hooks.json`. The manifest will not declare a `hooks` field because the current local plugin validator rejects that field.
 

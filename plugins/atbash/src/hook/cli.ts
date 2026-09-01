@@ -15,7 +15,7 @@ export async function executePreToolUse(
     const outcome = await evaluatePreToolUse(input, dependencies.createGuard);
     return outcome.allow ? "" : serializeDeny(outcome.reason);
   } catch {
-    return serializeDeny("Atbash ERROR: the Codex hook input was invalid.");
+    return serializeDeny("Atbash ERROR: the hook input was invalid.");
   }
 }
 
@@ -24,7 +24,7 @@ export async function runPreToolUseCli(): Promise<void> {
   try {
     output = await executePreToolUse(await readHookInput(process.stdin));
   } catch {
-    output = serializeDeny("Atbash ERROR: the Codex hook input could not be read.");
+    output = serializeDeny("Atbash ERROR: the hook input could not be read.");
   }
 
   if (output !== "") {

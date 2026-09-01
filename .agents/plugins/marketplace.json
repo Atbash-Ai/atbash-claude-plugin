@@ -1,7 +1,7 @@
 {
-  "name": "personal",
+  "name": "atbash-ai",
   "interface": {
-    "displayName": "Personal"
+    "displayName": "Atbash AI"
   },
   "plugins": [
     {
@@ -14,7 +14,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "category": "Productivity"
+      "category": "Security"
     }
   ]
 }

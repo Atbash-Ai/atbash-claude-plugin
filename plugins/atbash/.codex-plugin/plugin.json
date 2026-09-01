@@ -1,7 +1,7 @@
 {
   "name": "atbash",
-  "version": "0.1.0+codex.20260729150534",
-  "description": "Guards supported Codex tool calls with Atbash safety judgments before execution.",
+  "version": "0.3.3",
+  "description": "Automatically guards supported Codex tool calls with Atbash safety judgments and provides secure local setup guidance.",
   "author": {
     "name": "Atbash AI",
     "url": "https://atbash.ai"
@@ -9,13 +9,19 @@
   "homepage": "https://atbash.ai",
   "repository": "https://github.com/Atbash-Ai/atbash_chatgpt_plugin",
   "keywords": ["atbash", "codex", "safety", "policy", "guardrails"],
+  "skills": "./skills/",
   "interface": {
     "displayName": "Atbash Safety",
-    "shortDescription": "Policy checks before supported Codex tools run.",
-    "longDescription": "Atbash evaluates supported Codex tool calls against operator-defined safety policy before execution.",
+    "shortDescription": "Guard tool calls with Atbash",
+    "longDescription": "Atbash automatically evaluates supported Codex tool calls against operator-defined safety policy before execution, while a bundled skill guides local credential setup and diagnostics.",
     "developerName": "Atbash AI",
-    "category": "Productivity",
-    "capabilities": [],
-    "defaultPrompt": ["Verify that Atbash safety is active for this task."]
+    "category": "Security",
+    "logo": "./assets/atbash-icon.png",
+    "composerIcon": "./assets/atbash-icon.png",
+    "capabilities": ["Safety policy enforcement", "Local credential setup"],
+    "defaultPrompt": [
+      "Use $atbash-setup to configure Atbash without sharing my private key.",
+      "Verify that Atbash safety is active for this task."
+    ]
   }
 }

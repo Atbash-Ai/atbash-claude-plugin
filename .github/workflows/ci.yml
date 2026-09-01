@@ -27,3 +27,6 @@ jobs:
 
       - name: Verify
         run: npm run verify
+
+      - name: Verify committed marketplace runtime
+        run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime

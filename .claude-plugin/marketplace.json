@@ -1,0 +1,27 @@
+{
+  "name": "atbash-ai",
+  "owner": {
+    "name": "Atbash AI",
+    "url": "https://atbash.ai"
+  },
+  "metadata": {
+    "description": "Atbash AI safety plugins for Claude Code.",
+    "version": "0.3.3"
+  },
+  "plugins": [
+    {
+      "name": "atbash",
+      "source": "./plugins/atbash",
+      "description": "Fail-closed Atbash safety judgments for every supported Claude Code tool call via a catch-all PreToolUse hook, plus a guided setup skill.",
+      "version": "0.3.3",
+      "author": {
+        "name": "Atbash AI",
+        "url": "https://atbash.ai"
+      },
+      "homepage": "https://atbash.ai",
+      "repository": "https://github.com/Atbash-Ai/atbash_chatgpt_plugin",
+      "keywords": ["atbash", "safety", "security", "policy", "guardrails", "hooks"],
+      "category": "security"
+    }
+  ]
+}

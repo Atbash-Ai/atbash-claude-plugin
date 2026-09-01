@@ -9,10 +9,31 @@ import {
 } from "../src/hook/protocol.js";
 import { makeHookInput } from "./fixtures.js";
 
-test("parses the Codex PreToolUse wire shape", () => {
+test("parses the Claude Code PreToolUse wire shape", () => {
   const input = makeHookInput();
 
   assert.deepEqual(parsePreToolUseInput(JSON.stringify(input)), input);
+});
+
+test("parses optional host metadata when present", () => {
+  const input = makeHookInput({
+    model: "claude-opus-5",
+    tool_use_id: "tool-use-test",
+    turn_id: "turn-test",
+    agent_id: "agent-test",
+    agent_type: "general-purpose",
+  });
+
+  assert.deepEqual(parsePreToolUseInput(JSON.stringify(input)), input);
+});
+
+test("parses input without transcript_path and with a null transcript_path", () => {
+  const withoutTranscript = makeHookInput();
+  delete withoutTranscript.transcript_path;
+  assert.deepEqual(parsePreToolUseInput(JSON.stringify(withoutTranscript)), withoutTranscript);
+
+  const nullTranscript = makeHookInput({ transcript_path: null });
+  assert.deepEqual(parsePreToolUseInput(JSON.stringify(nullTranscript)), nullTranscript);
 });
 
 test("rejects malformed or incomplete hook input", () => {
@@ -21,9 +42,21 @@ test("rejects malformed or incomplete hook input", () => {
     () => parsePreToolUseInput(JSON.stringify({ hook_event_name: "PreToolUse" })),
     HookProtocolError,
   );
+  assert.throws(
+    () => parsePreToolUseInput(JSON.stringify(makeHookInput({ permission_mode: "" }))),
+    HookProtocolError,
+  );
+  assert.throws(
+    () => parsePreToolUseInput(JSON.stringify(makeHookInput({ transcript_path: 5 as never }))),
+    HookProtocolError,
+  );
+  assert.throws(
+    () => parsePreToolUseInput(JSON.stringify(makeHookInput({ model: 5 as never }))),
+    HookProtocolError,
+  );
 });
 
-test("serializes the verified Codex deny response", () => {
+test("serializes the Claude Code deny response", () => {
   assert.deepEqual(JSON.parse(serializeDeny("Atbash BLOCK: denied")), {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

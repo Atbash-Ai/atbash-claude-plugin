@@ -13,7 +13,9 @@ export function resolveOrgName(rawValue = resolve("orgName")): string | undefine
   return orgName === "" ? undefined : orgName;
 }
 
-export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS): number {
+export function resolveTimeoutMs(
+  rawValue = process.env.ATBASH_HOOK_TIMEOUT_MS ?? process.env.ATBASH_CODEX_TIMEOUT_MS,
+): number {
   if (rawValue === undefined || rawValue.trim() === "") {
     return DEFAULT_ATBASH_TIMEOUT_MS;
   }
@@ -25,7 +27,7 @@ export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS)
     parsed > MAX_ATBASH_TIMEOUT_MS
   ) {
     throw new Error(
-      `ATBASH_CODEX_TIMEOUT_MS must be an integer between ${MIN_ATBASH_TIMEOUT_MS} and ${MAX_ATBASH_TIMEOUT_MS}.`,
+      `ATBASH_HOOK_TIMEOUT_MS must be an integer between ${MIN_ATBASH_TIMEOUT_MS} and ${MAX_ATBASH_TIMEOUT_MS}.`,
     );
   }
 

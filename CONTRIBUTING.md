@@ -15,11 +15,12 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run build:marketplace
 npm run format:check
 npm run verify
 ```
 
-Run `npm run verify` before opening a pull request.
+Run `npm run verify` before opening a pull request. If hook or SDK integration code changes, also regenerate `plugins/atbash/runtime/` with `npm run build:marketplace` and commit the result. CI rejects a stale generated runtime.
 
 ## Safety rules
 
@@ -28,6 +29,7 @@ Run `npm run verify` before opening a pull request.
 - Keep hook standard output reserved for the Codex hook protocol.
 - Do not weaken the fail-closed behavior without updating the architecture contract.
 - Keep enforcement independent of model instructions or skills.
+- Review `runtime/manifest.json` and its native binary checksums whenever the pinned SDK changes.
 
 ## Phase boundaries
 

@@ -51,7 +51,7 @@ The catch-all matcher applies to the local tool paths Codex exposes to `PreToolU
 
 ## Installation and live probe
 
-The repository was registered as the `personal` marketplace, and `atbash@personal` was installed and reported by Codex as enabled. The plugin cache contained the compiled hook and embedded platform-native Atbash binding.
+The initial local verification registered the repository as the `personal` marketplace, and `atbash@personal` was installed and reported by Codex as enabled. The plugin cache contained the compiled hook and embedded platform-native Atbash binding. The published marketplace is now named `atbash-ai`, so Git-backed installations use `atbash@atbash-ai`.
 
 An ephemeral Codex task was run with hook trust bypass enabled only for the vetted test invocation. It attempted the read-only shell command `pwd` while `ATBASH_CODEX_TIMEOUT_MS=invalid` forced the configuration-error path. Codex returned:
 
@@ -64,3 +64,7 @@ The command did not execute. This demonstrates that the installed plugin is disc
 ## Activation and trust
 
 Codex hashes non-managed hook definitions. A newly installed or changed Atbash hook is skipped until reviewed and trusted through `/hooks`. The test-only `--dangerously-bypass-hook-trust` flag is not part of normal installation guidance. Users activate or deactivate the plugin through Codex's plugin controls.
+
+## Git marketplace packaging
+
+Version 0.2.0 adds a committed universal runtime to the marketplace snapshot. Automated tests verify the SDK version, presence of every supported native target, recorded SHA-256 checksums, and execution of the current platform's hook. CI regenerates the runtime from the pinned npm SDK and rejects any uncommitted difference.

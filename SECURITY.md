@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Security fixes are currently made against the latest `0.1.x` release line.
+Security fixes are currently made against the latest `0.2.x` release line.
 
 ## Report a vulnerability
 
@@ -14,5 +14,5 @@ Include the affected plugin and Codex versions, operating system and CPU archite
 
 - Store `ATBASH_AGENT_KEY` in the Atbash SDK user config or a secret-aware environment mechanism.
 - Treat the hook command as executable code and review changed definitions before trusting them in Codex.
-- Keep `@atbash/sdk` pinned and rebuild the plugin on the target platform after dependency changes.
+- Keep `@atbash/sdk` pinned. Regenerate and review the committed universal runtime and checksum manifest after dependency changes.
 - Do not interpret hook coverage as a complete host sandbox; hosted and opted-out tools may not pass through `PreToolUse`.

@@ -1,26 +1,28 @@
 {
   "name": "@atbash/codex-plugin",
-  "version": "0.1.0",
+  "version": "0.3.3",
   "private": true,
   "description": "Atbash safety enforcement for Codex.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
   },
-  "main": "./dist/index.cjs",
-  "types": "./dist/index.d.ts",
+  "main": "./runtime/index.cjs",
   "files": [
+    ".claude-plugin",
     ".codex-plugin",
     "hooks",
-    "dist"
+    "runtime",
+    "skills"
   ],
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "build:marketplace": "node build-marketplace.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-tests/tests/*.test.js",
     "status": "node dist/status.cjs"
   },
   "dependencies": {
-    "@atbash/sdk": "0.6.1"
+    "@atbash/sdk": "0.6.2"
   }
 }

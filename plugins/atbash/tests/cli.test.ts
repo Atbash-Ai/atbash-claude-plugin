@@ -23,7 +23,7 @@ test("successful allow produces no hook decision output", async () => {
   assert.equal(output, "");
 });
 
-test("deny produces the Codex permissionDecision wire shape", async () => {
+test("deny produces the Claude Code permissionDecision wire shape", async () => {
   const output = await executePreToolUse(JSON.stringify(makeHookInput()), {
     createGuard: () => guard({ allow: false, verdict: "BLOCK", reason: "blocked" }),
   });

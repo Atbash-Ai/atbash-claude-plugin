@@ -27,9 +27,22 @@ test("allows only a canonical ALLOW decision", async () => {
     {
       toolName: "Bash",
       args: { cmd: "git status --short" },
-      context: "source=codex; workspace=example; model=gpt-test; permission_mode=default",
+      context: "source=claude-code; workspace=example; permission_mode=default",
     },
   ]);
+});
+
+test("includes the model in Atbash context when the host provides it", async () => {
+  const calls: ToolCallInput[] = [];
+  const outcome = await evaluatePreToolUse(makeHookInput({ model: "claude-opus-5" }), () =>
+    guardReturning({ allow: true, verdict: "ALLOW" }, calls),
+  );
+
+  assert.deepEqual(outcome, { allow: true, source: "atbash" });
+  assert.equal(
+    calls[0]?.context,
+    "source=claude-code; workspace=example; permission_mode=default; model=claude-opus-5",
+  );
 });
 
 test("denies HOLD and includes its reference", async () => {
