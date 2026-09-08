@@ -1,6 +1,7 @@
 {
   "name": "atbash-chatgpt-plugin",
   "version": "0.3.3",
+  "license": "MIT",
   "private": true,
   "description": "Repository and local marketplace for the Atbash Codex safety plugin.",
   "type": "module",

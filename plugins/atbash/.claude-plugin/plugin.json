@@ -8,5 +8,6 @@
   },
   "homepage": "https://atbash.ai",
   "repository": "https://github.com/Atbash-Ai/atbash-claude-plugin",
+  "license": "MIT",
   "keywords": ["atbash", "safety", "security", "policy", "guardrails", "hooks"]
 }
