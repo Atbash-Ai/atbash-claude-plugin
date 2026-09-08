@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Removed the unused Atbash tool-name bypass. Status and other Atbash-named tools now receive safety judgments and fail closed on configuration errors, closing the red-team N7 namespace exemption.
+
 - Added Claude Code support: a `.claude-plugin/plugin.json` plugin manifest and a repository-root `.claude-plugin/marketplace.json` marketplace catalog, both passing `claude plugin validate --strict`.
 - Converted `hooks/hooks.json` to the Claude Code plugin hook format using `${CLAUDE_PLUGIN_ROOT}`.
 - Relaxed the `PreToolUse` input contract to match Claude Code's wire format: `model`, `turn_id`, `tool_use_id`, and `transcript_path` are now optional, and `permission_mode` accepts any non-empty string so a new host permission mode cannot deny every tool call.

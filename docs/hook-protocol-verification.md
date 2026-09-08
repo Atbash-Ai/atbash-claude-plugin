@@ -41,7 +41,7 @@ Automated tests verify:
 - `ALLOW`, `HOLD`, `BLOCK`, inconsistent output, and thrown-error mapping;
 - reason normalization and length bounds;
 - shell, patch, non-Atbash MCP, and another local function-tool name reaching the SDK adapter;
-- bypass only for the exact `mcp__atbash__` prefix;
+- Atbash-named tools (including status, execution, bare-prefix, and look-alike names) reaching the guard and failing closed when configuration is unavailable;
 - missing/invalid configuration failing closed;
 - bounded stdin handling;
 - status-state mapping without raw error leakage; and

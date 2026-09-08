@@ -4,17 +4,11 @@ import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 
-export const INTERNAL_ATBASH_TOOL_PREFIX = "mcp__atbash__";
-
 export type GuardFactory = () => ToolCallGuard;
 
 export type HookOutcome =
-  | { allow: true; source: "atbash" | "internal_bypass" }
+  | { allow: true; source: "atbash" }
   | { allow: false; reason: string; verdict: "HOLD" | "BLOCK" | "ERROR" };
-
-export function isInternalAtbashTool(toolName: string): boolean {
-  return toolName.startsWith(INTERNAL_ATBASH_TOOL_PREFIX);
-}
 
 function formatReference(toolCallId: string | undefined): string {
   if (toolCallId === undefined || toolCallId.trim() === "") {
@@ -45,10 +39,6 @@ export async function evaluatePreToolUse(
   input: PreToolUseInput,
   createGuard: GuardFactory = createAtbashGuard,
 ): Promise<HookOutcome> {
-  if (isInternalAtbashTool(input.tool_name)) {
-    return { allow: true, source: "internal_bypass" };
-  }
-
   let guard: ToolCallGuard;
   try {
     guard = createGuard();

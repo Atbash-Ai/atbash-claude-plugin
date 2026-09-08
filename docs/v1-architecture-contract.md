@@ -62,7 +62,7 @@ Valid Atbash configuration is required for an action to receive `ALLOW`, but it 
 
 Installing the plugin alone does not silently trust executable hooks. Codex's hook trust review remains part of activation.
 
-When active, Atbash is invoked for every tool call visible to the configured `PreToolUse` hook, except the explicit internal bypasses in section 8. The model does not decide whether to invoke Atbash.
+When active, Atbash is invoked for every tool call visible to the configured `PreToolUse` hook, without tool-name exceptions. The model does not decide whether to invoke Atbash.
 
 The user deactivates enforcement by disabling the plugin. Codex also permits users to disable or untrust non-managed hooks; doing so makes the guard inactive and Codex is expected to surface that state. Enterprise administrators may later distribute a managed version, but managed enforcement is outside v1.
 
@@ -85,16 +85,16 @@ The implementation will use `PLUGIN_ROOT` to resolve installed files rather than
 
 "Always" means every actionable call exposed through Codex's documented local function-tool hook path.
 
-| Tool path                                  | v1 behavior                                                            |
-| ------------------------------------------ | ---------------------------------------------------------------------- |
-| Shell commands and unified exec            | Judged before the original command starts                              |
-| `apply_patch`, `Edit`, and `Write`         | Judged before the edit                                                 |
-| MCP tools                                  | Judged before the MCP invocation, except Atbash's own diagnostic tools |
-| Other local function tools                 | Judged when Codex routes them through `PreToolUse`                     |
-| `write_stdin` for an existing exec session | Not judged again; the originating command was already judged           |
-| Hosted tools such as web search            | Outside current Codex hook coverage                                    |
-| Specialized tools that opt out of hooks    | Outside current Codex hook coverage                                    |
-| Plain model responses with no tool call    | No action exists to judge                                              |
+| Tool path                                  | v1 behavior                                                  |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| Shell commands and unified exec            | Judged before the original command starts                    |
+| `apply_patch`, `Edit`, and `Write`         | Judged before the edit                                       |
+| MCP tools                                  | Judged before every MCP invocation exposed to the hook       |
+| Other local function tools                 | Judged when Codex routes them through `PreToolUse`           |
+| `write_stdin` for an existing exec session | Not judged again; the originating command was already judged |
+| Hosted tools such as web search            | Outside current Codex hook coverage                          |
+| Specialized tools that opt out of hooks    | Outside current Codex hook coverage                          |
+| Plain model responses with no tool call    | No action exists to judge                                    |
 
 This plugin is a strong lifecycle guardrail, not a complete security boundary. The README must preserve this distinction.
 
@@ -167,9 +167,9 @@ The hook maps Codex input to `ToolCallInput` as follows:
 
 The hook will not read or send the transcript. It will not add environment variables, private keys, arbitrary file contents, or unrelated conversation text to `context`.
 
-The catch-all hook must bypass Atbash-owned diagnostic MCP tools, identified by an exact namespace controlled by this plugin. This avoids judging health and status calls through the same integration. Calling the SDK directly inside the hook does not create a Codex tool call and therefore does not recurse.
+The catch-all hook has no tool-name bypass. Atbash-named diagnostic tools receive the same judgment and fail-closed handling as other tools. A tool name does not establish ownership. Calling the SDK directly inside the hook does not create a host tool call and therefore does not recurse. The standalone local status command remains available outside the host for troubleshooting.
 
-No other user-requested action is bypassed in v1.
+No user-requested tool call exposed to the hook is bypassed in v1.
 
 ## 9. Decision semantics
 

@@ -145,7 +145,7 @@ For `HOLD`, operator review remains in Atbash. The plugin does not auto-poll or 
 
 ## Coverage and limits
 
-The hook covers shell execution, file edits and writes, MCP calls, and the other tools that Claude Code exposes to `PreToolUse`. The exact `mcp__atbash__*` namespace is reserved for future Atbash diagnostics and bypasses the guard to prevent recursion.
+The hook covers shell execution, file edits and writes, MCP calls, and the other tools that Claude Code exposes to `PreToolUse`. No tool name is exempt from judgment, including Atbash-named diagnostic tools. Direct SDK calls inside the hook do not trigger another host tool call and cannot recurse through this hook.
 
 Tools that opt out of hooks are outside hook coverage, and plain model responses have no tool call to judge. Consequently, this plugin is a strong lifecycle guardrail, not a complete host security boundary.
 

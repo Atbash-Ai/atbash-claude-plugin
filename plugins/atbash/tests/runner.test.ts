@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import type { ToolCallGuard } from "../src/atbash/guard.js";
-import { evaluatePreToolUse, isInternalAtbashTool } from "../src/hook/runner.js";
+import { evaluatePreToolUse } from "../src/hook/runner.js";
 import { makeHookInput } from "./fixtures.js";
 
 function guardReturning(decision: Decision, calls: ToolCallInput[] = []): ToolCallGuard {
@@ -98,17 +98,29 @@ test("fails closed on configuration and runtime errors", async () => {
   });
 });
 
-test("bypasses only the exact Atbash MCP namespace", async () => {
-  assert.equal(isInternalAtbashTool("mcp__atbash__status"), true);
-  assert.equal(isInternalAtbashTool("mcp__atbash_fake__status"), false);
+test("judges every Atbash-named tool and fails closed without configuration", async () => {
+  for (const toolName of [
+    "mcp__atbash__status",
+    "mcp__atbash__exec",
+    "mcp__atbash__",
+    "mcp__atbash_fake__status",
+  ]) {
+    const calls: ToolCallInput[] = [];
+    const input = makeHookInput({ tool_name: toolName });
+    const blocked = await evaluatePreToolUse(input, () =>
+      guardReturning({ allow: false, verdict: "BLOCK", reason: "policy denial" }, calls),
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.toolName, toolName);
+    assert.equal(blocked.allow, false);
+    assert.equal(blocked.allow ? undefined : blocked.verdict, "BLOCK");
 
-  const outcome = await evaluatePreToolUse(
-    makeHookInput({ tool_name: "mcp__atbash__status" }),
-    () => {
-      throw new Error("guard factory must not run");
-    },
-  );
-  assert.deepEqual(outcome, { allow: true, source: "internal_bypass" });
+    const unconfigured = await evaluatePreToolUse(input, () => {
+      throw new Error("missing configuration");
+    });
+    assert.equal(unconfigured.allow, false);
+    assert.equal(unconfigured.allow ? undefined : unconfigured.verdict, "ERROR");
+  }
 });
 
 test("routes shell, patch, MCP, and other local tools through the guard", async () => {
