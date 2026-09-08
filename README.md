@@ -4,7 +4,7 @@ Atbash Safety is a Claude Code plugin that evaluates supported tool calls throug
 
 While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a canonical SDK result of `allow: true` with verdict `ALLOW` continues.
 
-The repository also carries the manifests for the original Codex distribution (`.codex-plugin/`, `.agents/plugins/marketplace.json`); the active hook definition on this branch targets Claude Code.
+The repository also carries the manifests for the original Codex distribution (`.codex-plugin/`, `.agents/plugins/marketplace.json`); the active hook definition in this repository targets Claude Code.
 
 ## Requirements
 
@@ -20,14 +20,14 @@ No clone, npm install, or local build is required. The plugin ships a committed 
 From the terminal:
 
 ```bash
-claude plugin marketplace add Atbash-Ai/atbash_chatgpt_plugin
+claude plugin marketplace add Atbash-Ai/atbash-claude-plugin
 claude plugin install atbash@atbash-ai
 ```
 
 Or inside a Claude Code session:
 
 ```text
-/plugin marketplace add Atbash-Ai/atbash_chatgpt_plugin
+/plugin marketplace add Atbash-Ai/atbash-claude-plugin
 /plugin install atbash@atbash-ai
 ```
 

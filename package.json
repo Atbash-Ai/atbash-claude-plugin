@@ -24,7 +24,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Atbash-Ai/atbash_chatgpt_plugin.git"
+    "url": "https://github.com/Atbash-Ai/atbash-claude-plugin.git"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

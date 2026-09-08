@@ -7,6 +7,6 @@
     "url": "https://atbash.ai"
   },
   "homepage": "https://atbash.ai",
-  "repository": "https://github.com/Atbash-Ai/atbash_chatgpt_plugin",
+  "repository": "https://github.com/Atbash-Ai/atbash-claude-plugin",
   "keywords": ["atbash", "safety", "security", "policy", "guardrails", "hooks"]
 }
