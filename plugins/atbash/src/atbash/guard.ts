@@ -13,9 +13,7 @@ export function resolveOrgName(rawValue = resolve("orgName")): string | undefine
   return orgName === "" ? undefined : orgName;
 }
 
-export function resolveTimeoutMs(
-  rawValue = process.env.ATBASH_HOOK_TIMEOUT_MS ?? process.env.ATBASH_CODEX_TIMEOUT_MS,
-): number {
+export function resolveTimeoutMs(rawValue = process.env.ATBASH_HOOK_TIMEOUT_MS): number {
   if (rawValue === undefined || rawValue.trim() === "") {
     return DEFAULT_ATBASH_TIMEOUT_MS;
   }

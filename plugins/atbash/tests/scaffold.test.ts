@@ -7,12 +7,8 @@ interface PluginManifest {
   name?: unknown;
   version?: unknown;
   description?: unknown;
-  skills?: unknown;
   hooks?: unknown;
   mcpServers?: unknown;
-  interface?: {
-    displayName?: unknown;
-  };
 }
 
 interface ClaudeMarketplaceManifest {
@@ -24,23 +20,6 @@ interface ClaudeMarketplaceManifest {
     name?: unknown;
     source?: unknown;
     category?: unknown;
-  }>;
-}
-
-interface CodexMarketplaceManifest {
-  name?: unknown;
-  interface?: {
-    displayName?: unknown;
-  };
-  plugins?: Array<{
-    name?: unknown;
-    source?: {
-      path?: unknown;
-    };
-    policy?: {
-      installation?: unknown;
-      authentication?: unknown;
-    };
   }>;
 }
 
@@ -73,18 +52,6 @@ test("Claude Code manifest matches the accepted plugin identity", async () => {
   assert.equal(manifest.mcpServers, undefined);
 });
 
-test("Codex manifest matches the accepted plugin identity", async () => {
-  const manifest = await readJson<PluginManifest>(
-    join(process.cwd(), ".codex-plugin", "plugin.json"),
-  );
-
-  assert.equal(manifest.name, "atbash");
-  assert.equal(manifest.interface?.displayName, "Atbash Safety");
-  assert.equal(manifest.skills, "./skills/");
-  assert.equal(manifest.hooks, undefined);
-  assert.equal(manifest.mcpServers, undefined);
-});
-
 test("Claude Code marketplace points to the local Atbash plugin", async () => {
   const marketplace = await readJson<ClaudeMarketplaceManifest>(
     join(process.cwd(), "..", "..", ".claude-plugin", "marketplace.json"),
@@ -96,20 +63,6 @@ test("Claude Code marketplace points to the local Atbash plugin", async () => {
   assert.ok(entry);
   assert.equal(entry.source, "./plugins/atbash");
   assert.equal(entry.category, "security");
-});
-
-test("Codex repo marketplace points to the local Atbash plugin", async () => {
-  const marketplace = await readJson<CodexMarketplaceManifest>(
-    join(process.cwd(), "..", "..", ".agents", "plugins", "marketplace.json"),
-  );
-  const entry = marketplace.plugins?.find((plugin) => plugin.name === "atbash");
-
-  assert.equal(marketplace.name, "atbash-ai");
-  assert.equal(marketplace.interface?.displayName, "Atbash AI");
-  assert.ok(entry);
-  assert.equal(entry.source?.path, "./plugins/atbash");
-  assert.equal(entry.policy?.installation, "AVAILABLE");
-  assert.equal(entry.policy?.authentication, "ON_INSTALL");
 });
 
 test("hook bundle declares catch-all PreToolUse enforcement", async () => {

@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Atbash AI safety plugins for Claude Code.",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "plugins": [
     {
       "name": "atbash",
       "source": "./plugins/atbash",
       "description": "Fail-closed Atbash safety judgments for every supported Claude Code tool call via a catch-all PreToolUse hook, plus a guided setup skill.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": {
         "name": "Atbash AI",
         "url": "https://atbash.ai"

@@ -1,9 +1,9 @@
 {
-  "name": "atbash-chatgpt-plugin",
-  "version": "0.4.0",
+  "name": "atbash-claude-plugin",
+  "version": "0.4.1",
   "license": "MIT",
   "private": true,
-  "description": "Repository and local marketplace for the Atbash Codex safety plugin.",
+  "description": "Repository and Git-backed marketplace for the Atbash Safety plugin for Claude Code.",
   "type": "module",
   "packageManager": "npm@11.12.1",
   "engines": {
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "build:marketplace": "npm run build:marketplace --workspace @atbash/codex-plugin",
+    "build:marketplace": "npm run build:marketplace --workspace @atbash/claude-plugin",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint .",

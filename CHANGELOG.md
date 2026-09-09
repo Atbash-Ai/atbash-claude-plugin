@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 0.4.1 - 2026-09-09
+
+- Updated the exact npm dependency and committed universal runtime to `@atbash/sdk@0.7.1`.
+- Made this repository Claude Code–exclusive: removed the Codex plugin manifest (`.codex-plugin/`), the Codex marketplace catalog (`.agents/plugins/marketplace.json`), the OpenAI skill interface file, and the Codex-era architecture and hook-protocol documents.
+- Renamed the workspace from `@atbash/codex-plugin` to `@atbash/claude-plugin` and the root package to `atbash-claude-plugin`.
+- Removed the legacy `ATBASH_CODEX_TIMEOUT_MS` timeout fallback; use `ATBASH_HOOK_TIMEOUT_MS`.
+- Pointed security reporting and repository references at `Atbash-Ai/atbash-claude-plugin`.
+
 ## 0.4.0 - 2026-09-09
 
 - Removed the unused Atbash tool-name bypass. Status and other Atbash-named tools now receive safety judgments and fail closed on configuration errors, closing the red-team N7 namespace exemption.

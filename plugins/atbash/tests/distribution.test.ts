@@ -77,15 +77,9 @@ test("marketplace package includes the setup skill", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     files?: string[];
   };
-  const manifest = JSON.parse(readFileSync(".codex-plugin/plugin.json", "utf8")) as {
-    skills?: string;
-  };
   const skill = readFileSync("skills/atbash-setup/SKILL.md", "utf8");
-  const skillInterface = readFileSync("skills/atbash-setup/agents/openai.yaml", "utf8");
 
   assert.equal(packageJson.files?.includes("skills"), true);
-  assert.equal(manifest.skills, "./skills/");
   assert.match(skill, /^---\r?\nname: atbash-setup\r?\n/);
   assert.doesNotMatch(skill, /\[TODO:/);
-  assert.match(skillInterface, /\$atbash-setup/);
 });

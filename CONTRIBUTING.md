@@ -26,11 +26,11 @@ Run `npm run verify` before opening a pull request. If hook or SDK integration c
 
 - Never commit an Atbash agent private key or a populated `.env` file.
 - Use synthetic credentials and payloads in tests.
-- Keep hook standard output reserved for the Codex hook protocol.
-- Do not weaken the fail-closed behavior without updating the architecture contract.
+- Keep hook standard output reserved for the Claude Code hook protocol.
+- Do not weaken the fail-closed behavior.
 - Keep enforcement independent of model instructions or skills.
 - Review `runtime/manifest.json` and its native binary checksums whenever the pinned SDK changes.
 
-## Phase boundaries
+## Behavior boundaries
 
-The v1 implementation follows the accepted architecture contract. Changes to activation, hook coverage, decision mapping, internal bypasses, failure behavior, or data sent to Atbash require corresponding contract, protocol, and test updates.
+Changes to activation, hook coverage, decision mapping, internal bypasses, failure behavior, or data sent to Atbash require corresponding documentation and test updates.

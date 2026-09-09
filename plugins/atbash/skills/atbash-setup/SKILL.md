@@ -67,7 +67,7 @@ After configuration and activation, use a harmless tool call such as listing the
 If working from a source checkout, the user can run:
 
 ```bash
-npm run status --workspace @atbash/codex-plugin
+npm run status --workspace @atbash/claude-plugin
 ```
 
 Interpret status results as follows:

@@ -1,10 +1,8 @@
 # Atbash Safety Plugin
 
-Atbash Safety is a Claude Code plugin that evaluates supported tool calls through `@atbash/sdk@0.6.2` before Claude Code executes them. It uses a catch-all `PreToolUse` hook, so enforcement is mechanical: the model does not decide when to call Atbash. A bundled `atbash-setup` skill guides secure local configuration and diagnostics without moving user keys to an MCP server.
+Atbash Safety is a Claude Code plugin that evaluates supported tool calls through `@atbash/sdk@0.7.1` before Claude Code executes them. It uses a catch-all `PreToolUse` hook, so enforcement is mechanical: the model does not decide when to call Atbash. A bundled `atbash-setup` skill guides secure local configuration and diagnostics without moving user keys to an MCP server.
 
 While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a canonical SDK result of `allow: true` with verdict `ALLOW` continues.
-
-The repository also carries the manifests for the original Codex distribution (`.codex-plugin/`, `.agents/plugins/marketplace.json`); the active hook definition in this repository targets Claude Code.
 
 ## Requirements
 
@@ -53,8 +51,6 @@ The plugin calls `Atbash.fromConfig()`. The SDK resolves values in this order: e
 | Provider          | `ATBASH_PROVIDER`        | No                                         |
 | Provider model    | `ATBASH_PROVIDER_MODEL`  | No                                         |
 | Hook SDK timeout  | `ATBASH_HOOK_TIMEOUT_MS` | No; defaults to 30,000 ms                  |
-
-`ATBASH_CODEX_TIMEOUT_MS` is still honored as a legacy fallback for the hook timeout.
 
 Only the private key is configured. The SDK validates it, uses it locally for agent identity and cryptographic signing, and derives the corresponding public key locally. The public key must already be onboarded to the named organization in the [Atbash agent dashboard](https://atbash.ai/risk-engine/agents), but it should not be added to the plugin configuration. The plugin never uploads the config file or private key to an MCP service.
 
@@ -116,7 +112,7 @@ The plugin explicitly resolves and forwards the organization name to the SDK. Th
 Check the configured agent from a source checkout of the repository:
 
 ```bash
-npm run status --workspace @atbash/codex-plugin
+npm run status --workspace @atbash/claude-plugin
 ```
 
 The command reports `ready`, `configuration_error`, `agent_not_registered`, `agent_jailed`, or `service_error`. It never prints the private key.
@@ -161,6 +157,8 @@ npm run build:marketplace
 
 `verify` runs type checking, linting, automated tests, a platform-specific development build, and formatting checks. `build:marketplace` regenerates the committed universal runtime from the exact npm SDK version and downloads its four supported native packages. The installed plugin does not run npm lifecycle scripts or require npm; it uses this committed runtime. The build does not reimplement Atbash signing, redaction, normalization, or policy logic.
 
+The committed native binaries under `plugins/atbash/runtime/native/` are byte-identical to the published `@atbash/sdk-*` npm packages: `runtime/manifest.json` records each package name and SHA-256, the test suite recomputes the checksums, and CI reruns `npm run build:marketplace` and fails on any diff against the committed runtime.
+
 Validate the plugin and marketplace manifests with the Claude Code CLI:
 
 ```bash
@@ -173,8 +171,5 @@ Repository layout:
 - `.claude-plugin/marketplace.json` — Git-backed Claude Code marketplace catalog
 - `plugins/atbash/.claude-plugin/plugin.json` — Claude Code plugin manifest
 - `plugins/atbash/` — automatic hook, setup skill, SDK adapter, diagnostics, tests, and committed universal runtime
-- `.codex-plugin/`, `.agents/plugins/marketplace.json` — manifests for the Codex distribution
-- `docs/v1-architecture-contract.md` — accepted behavior and boundaries
-- `docs/hook-protocol-verification.md` — verified hook wire contract
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development rules and [SECURITY.md](./SECURITY.md) for vulnerability reporting.

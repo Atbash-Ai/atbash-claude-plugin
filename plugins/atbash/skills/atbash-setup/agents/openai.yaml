@@ -1,4 +1,0 @@
-interface:
-  display_name: "Set Up Atbash"
-  short_description: "Configure and verify local Atbash safety"
-  default_prompt: "Use $atbash-setup to configure or verify Atbash safely."

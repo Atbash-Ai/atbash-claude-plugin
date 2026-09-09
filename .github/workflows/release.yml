@@ -60,11 +60,11 @@ jobs:
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 
       - name: Package plugin
-        run: npm pack --workspace @atbash/codex-plugin
+        run: npm pack --workspace @atbash/claude-plugin
 
       - name: Upload plugin package
         uses: actions/upload-artifact@v4
         with:
-          name: atbash-codex-plugin-universal
-          path: atbash-codex-plugin-*.tgz
+          name: atbash-claude-plugin-universal
+          path: atbash-claude-plugin-*.tgz
           if-no-files-found: error

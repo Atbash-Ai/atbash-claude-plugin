@@ -1,6 +1,6 @@
 {
   "name": "atbash",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Automatically guards Claude Code tool calls with fail-closed Atbash safety judgments and provides secure local setup guidance.",
   "author": {
     "name": "Atbash AI",
