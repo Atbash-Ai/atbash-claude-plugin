@@ -113,7 +113,15 @@ try {
   // A host that closed stderr must not turn every diverted log line into a crash deny.
   process.stderr.on("error", () => {});
   process.stdout.write = function (chunk, encoding, callback) {
-    const text = typeof chunk === "string" ? chunk : String(chunk);
+    // A Buffer or typed-array chunk is decoded, never String()-ed (that would give "123,34,...").
+    const text =
+      typeof chunk === "string"
+        ? chunk
+        : Buffer.isBuffer(chunk)
+          ? chunk.toString("utf8")
+          : ArrayBuffer.isView(chunk)
+            ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString("utf8")
+            : String(chunk);
     if (isDecision(text)) {
       answered = true;
       return stdoutWrite(chunk, encoding, callback);

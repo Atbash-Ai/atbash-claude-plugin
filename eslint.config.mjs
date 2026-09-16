@@ -25,7 +25,12 @@ export default tseslint.config(
     // no dependencies so it can still deny when the bundled hook next to it cannot load.
     files: ["plugins/atbash/src/hook/shim.cjs"],
     languageOptions: {
-      globals: { process: "readonly", require: "readonly", setTimeout: "readonly" },
+      globals: {
+        Buffer: "readonly",
+        process: "readonly",
+        require: "readonly",
+        setTimeout: "readonly",
+      },
       sourceType: "commonjs",
     },
     rules: {

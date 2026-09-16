@@ -456,22 +456,70 @@ test("the shim recognises exactly what serializeDeny emits", async () => {
     readFileSync("src/hook/shim.cjs", "utf8"),
     /hookSpecificOutput\?\.permissionDecision/,
   );
-  // Drive the built shim with a bundle that writes exactly serializeDeny's output and lingers.
+  // Drive the built shim with a bundle that writes exactly serializeDeny's output and lingers - as
+  // a string, as a Buffer and as a Uint8Array (a typed-array chunk must be decoded, not String()-ed).
+  const writers = [
+    `process.stdout.write(${JSON.stringify(emitted + "\n")});`,
+    `process.stdout.write(Buffer.from(${JSON.stringify(emitted + "\n")}));`,
+    `process.stdout.write(new Uint8Array(Buffer.from(${JSON.stringify(emitted + "\n")})));`,
+  ];
+  for (const writer of writers) {
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(join(d, "pre-tool-use-main.cjs"), `${writer} setInterval(() => {}, 1000);\n`);
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        { ATBASH_HOOK_DEADLINE_MS: "1500" },
+        dir,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(
+        result.stdout.trim(),
+        emitted.trim(),
+        `the real deny must pass through untouched (${writer})`,
+      );
+      assert.ok(result.wallMs < 8_000, `the process lingered ${result.wallMs} ms`);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
+test("a host that closed stderr does not turn a diverted log line into a crash", async () => {
+  // Diverted library output goes to stderr; if the host closed it, the write error must be dropped,
+  // not surface as an uncaught exception that ends the judgment in a crash deny at 0.1 s. The
+  // deadline deny is still what reaches stdout.
   const dir = withDamagedRuntime((d) => {
-    writeFileSync(
-      join(d, "pre-tool-use-main.cjs"),
-      `process.stdout.write(${JSON.stringify(emitted + "\n")}); setInterval(() => {}, 1000);\n`,
-    );
+    const fixture = [
+      `console.log(${JSON.stringify("[10:00:00.000] Warning: [postchain] node unreachable, retrying")});`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), fixture + "\n");
   });
   try {
-    const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
-      { ATBASH_HOOK_DEADLINE_MS: "1500" },
-      dir,
+    const result = await new Promise<RunResult>((resolve) => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.destroy();
+      child.stdin.end(JSON.stringify(makeHookInput()));
+      child.on("close", (code) =>
+        resolve({ code, stdout, stderr: "", wallMs: Date.now() - started }),
+      );
+    });
+    assert.equal(result.code, 0, `exit ${result.code}`);
+    assert.match(
+      result.stdout,
+      /did not finish/,
+      `expected the deadline deny, got ${JSON.stringify(result.stdout)}`,
     );
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout.trim(), emitted.trim(), "the real deny must pass through untouched");
-    assert.ok(result.wallMs < 8_000, `the process lingered ${result.wallMs} ms`);
+    assert.ok(result.wallMs >= 1_400, `the judgment was cut short at ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

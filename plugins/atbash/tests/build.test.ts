@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import test from "node:test";
@@ -76,6 +76,7 @@ test("build: a native file that is not a regular file is refused (a path check i
       /not a regular file/,
     );
     assert.equal(helpers.assertRegularFile(buildScriptPath), buildScriptPath);
+    unlinkSync(link);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -93,6 +94,8 @@ test("build: the entry-point guard matches the script through a junction and nev
     const link = join(dir, "plugin");
     symlinkSync(resolve(buildScriptPath, ".."), link, "junction");
     assert.equal(helpers.isEntryPoint(join(link, "build-marketplace.mjs")), true, "junction path");
+    // The junction points at the live source tree: unlink it before the recursive removal.
+    unlinkSync(link);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
