@@ -72,6 +72,27 @@ export function containedNativePath(extractDir, reported) {
   return target;
 }
 
+// A path check is not a file check: a symlink inside the package would be followed by copyFile, and
+// a directory or device is not a binary. Only a regular file is copied.
+export function assertRegularFile(path, lstat = lstatSync) {
+  if (!lstat(path).isFile()) {
+    throw new Error(`Refusing native file ${JSON.stringify(path)}: not a regular file.`);
+  }
+  return path;
+}
+
+// Run the build only when this file is the script node was started with. Both sides are resolved
+// through realpath so a drive-letter case or a symlinked checkout cannot turn the build into a
+// silent no-op (which would leave CI's runtime diff comparing a stale tree and passing).
+export function isEntryPoint(argv1 = process.argv[1], moduleUrl = import.meta.url) {
+  if (argv1 === undefined) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
 export async function buildMarketplace() {
   const require = createRequire(import.meta.url);
   const sdkPackagePath = join(dirname(dirname(require.resolve("@atbash/sdk"))), "package.json");
@@ -119,13 +140,7 @@ export async function buildMarketplace() {
       const destinationDir = join(stagingDir, "native", platform);
       const destination = join(destinationDir, "atbash.node");
       await mkdir(destinationDir, { recursive: true });
-      const nativeSource = containedNativePath(extractDir, nativeFile.path);
-      // A path check is not a file check: a symlink inside the package would be followed by copyFile.
-      if (!lstatSync(nativeSource).isFile()) {
-        throw new Error(
-          `Refusing native file ${JSON.stringify(nativeFile.path)}: not a regular file.`,
-        );
-      }
+      const nativeSource = assertRegularFile(containedNativePath(extractDir, nativeFile.path));
       await copyFile(nativeSource, destination);
       // Modes are part of what CI diffs against the committed runtime; the tarball's mode is not ours.
       await chmod(destination, 0o644);
@@ -161,18 +176,6 @@ export async function buildMarketplace() {
   } finally {
     if (!swapped) await rm(stagingDir, { force: true, recursive: true });
     await rm(tempDir, { force: true, recursive: true });
-  }
-}
-
-// Run the build only when this file is the script node was started with. Both sides are resolved
-// through realpath so a drive-letter case or a symlinked checkout cannot turn the build into a
-// silent no-op (which would leave CI's runtime diff comparing a stale tree and passing).
-function isEntryPoint() {
-  if (process.argv[1] === undefined) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
   }
 }
 

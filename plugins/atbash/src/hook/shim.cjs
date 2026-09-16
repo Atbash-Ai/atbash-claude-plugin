@@ -13,7 +13,8 @@
 // shim exits 2 (a blocking error for the host) rather than 0 with an empty, permit-shaped stdout.
 // What this cannot close: a synchronous hang inside the bundle or the native addon keeps the event
 // loop from ever running the deadline timer; only the host timeout ends that. A write straight to
-// file descriptor 1 (not through process.stdout) is not intercepted either; the bundle has none.
+// file descriptor 1 (not through process.stdout) is not intercepted either: the JS bundle has none,
+// and the native SDK addon is assumed not to print to fd 1 (its panics go to fd 2).
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -24,12 +25,25 @@ const MAX_DEADLINE_MS = 30000;
 
 // stdout is the decision channel and nothing else may reach it. The bundled hook writes exactly one
 // thing there, its decision (a deny JSON; a permit is silence), but the bundle also carries library
-// loggers whose sink is console.log - postchain-client logs "disagreeing responses" and retry
-// warnings at its default level - and a stray log line on stdout would both corrupt the host's
-// parse and, if it counted as "answered", suppress the deadline deny. So: a chunk carrying the
-// decision marker is the decision and marks the hook as answered; every other chunk is diverted to
-// stderr (the host transcript) and leaves the deadline armed.
-const DECISION_MARKER = '"hookSpecificOutput"';
+// loggers whose sink is console.log - postchain-client's warning() and error() both fire at its
+// default level (LOG_LEVEL unset): "Got disagreeing responses ..." is a warning and its error()
+// lines fire at every level but Disabled - and a stray log line on stdout would both corrupt the host's
+// parse and, if it counted as "answered", suppress the deadline deny. So: a chunk that IS a
+// decision (it parses as JSON with a hookSpecificOutput.permissionDecision string - not one that
+// merely mentions the marker inside a logged payload) is the decision and marks the hook as
+// answered; every other chunk is diverted to stderr (the host transcript) and leaves the deadline
+// armed. The decision the bundled hook writes is one JSON.stringify'd object plus a newline
+// (src/hook/protocol.ts serializeDeny), which is what isDecision accepts; tests pin that coupling.
+function isDecision(text) {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed?.hookSpecificOutput?.permissionDecision === "string";
+  } catch {
+    return false;
+  }
+}
 let answered = false;
 // Set when the stdout pipe reports an error after the bundle's decision was queued (the host went
 // away): the decision was lost, and the answered branch below must not end with a permit-shaped 0.
@@ -96,9 +110,11 @@ try {
   process.stdout.on("error", () => {
     stdoutBroken = true;
   });
+  // A host that closed stderr must not turn every diverted log line into a crash deny.
+  process.stderr.on("error", () => {});
   process.stdout.write = function (chunk, encoding, callback) {
     const text = typeof chunk === "string" ? chunk : String(chunk);
-    if (text.includes(DECISION_MARKER)) {
+    if (isDecision(text)) {
       answered = true;
       return stdoutWrite(chunk, encoding, callback);
     }
