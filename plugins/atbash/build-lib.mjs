@@ -93,4 +93,5 @@ module.exports = require(target);
 `;
 
   await writeFile(join(outdir, "atbash-native.cjs"), source, "utf8");
+  await chmod(join(outdir, "atbash-native.cjs"), 0o644);
 }

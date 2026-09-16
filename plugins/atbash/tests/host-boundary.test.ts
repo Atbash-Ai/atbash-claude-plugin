@@ -333,3 +333,75 @@ test("when stdout cannot be written the shim exits 2, never 0 with an empty outp
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("a runtime that logs to stdout and then hangs is still denied at the deadline", async () => {
+  // The bundle carries library loggers whose sink is console.log (postchain-client warns on
+  // disagreeing or unreachable nodes at its default level). A stray line on stdout must neither
+  // count as the decision (it would suppress the deadline deny) nor reach the host's parser: it
+  // is diverted to stderr and the deny still arrives on stdout, alone.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      'console.log("[10:00:00.000] Warning: [postchain] node unreachable, retrying");\nsetInterval(() => {}, 1000);\n',
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "1500" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /did not finish/, result.stdout);
+    assert.doesNotMatch(
+      result.stdout,
+      /postchain/,
+      "the log line must not reach the decision channel",
+    );
+    assert.match(result.stderr, /postchain/, "the log line goes to stderr (the host transcript)");
+    assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
+    assert.ok(result.wallMs < 8_000, `denied after ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a decision the bundle wrote is delivered in full when the host reads late", async () => {
+  // A 200 KB decision is larger than a pipe buffer; on POSIX process.stdout is asynchronous for
+  // pipes, so a bundle that lingers past the deadline must not be ended before those bytes have
+  // drained. The parent does not read stdout until after the deadline has fired.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      'const reason = "x".repeat(200000);\nprocess.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }) + "\\n");\nsetInterval(() => {}, 1000);\n',
+    );
+  });
+  try {
+    const result = await new Promise<RunResult>((resolve) => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.pause();
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.stdin.end(JSON.stringify(makeHookInput()));
+      setTimeout(() => child.stdout.resume(), 3_000);
+      child.on("close", (code) => resolve({ code, stdout, stderr, wallMs: Date.now() - started }));
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const decision = JSON.parse(result.stdout) as {
+      hookSpecificOutput: { permissionDecisionReason: string };
+    };
+    assert.equal(decision.hookSpecificOutput.permissionDecisionReason.length, 200_000);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.ok(result.wallMs < 10_000, `the process lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});

@@ -12,7 +12,8 @@
 // synchronously, so it cannot be lost to an undrained pipe; if stdout cannot be written at all the
 // shim exits 2 (a blocking error for the host) rather than 0 with an empty, permit-shaped stdout.
 // What this cannot close: a synchronous hang inside the bundle or the native addon keeps the event
-// loop from ever running the deadline timer; only the host timeout ends that.
+// loop from ever running the deadline timer; only the host timeout ends that. A write straight to
+// file descriptor 1 (not through process.stdout) is not intercepted either; the bundle has none.
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -21,20 +22,55 @@ const MIN_DEADLINE_MS = 1000;
 // bundle load (~0.2 s warm, more under a cold cache or a scanner) must fit inside the margin.
 const MAX_DEADLINE_MS = 30000;
 
-// Anything the bundle writes to stdout is its decision (a deny, or the empty permit is silence);
-// once a byte is out, the shim must never add a second JSON object after it.
+// stdout is the decision channel and nothing else may reach it. The bundled hook writes exactly one
+// thing there, its decision (a deny JSON; a permit is silence), but the bundle also carries library
+// loggers whose sink is console.log - postchain-client logs "disagreeing responses" and retry
+// warnings at its default level - and a stray log line on stdout would both corrupt the host's
+// parse and, if it counted as "answered", suppress the deadline deny. So: a chunk carrying the
+// decision marker is the decision and marks the hook as answered; every other chunk is diverted to
+// stderr (the host transcript) and leaves the deadline armed.
+const DECISION_MARKER = '"hookSpecificOutput"';
 let answered = false;
-const stdoutWrite = process.stdout.write.bind(process.stdout);
-process.stdout.write = function (chunk, encoding, callback) {
-  answered = true;
-  return stdoutWrite(chunk, encoding, callback);
-};
+// Set when the stdout pipe reports an error after the bundle's decision was queued (the host went
+// away): the decision was lost, and the answered branch below must not end with a permit-shaped 0.
+let stdoutBroken = false;
+let stdoutWrite = null;
+
+function exitBlocking(reason) {
+  // Nothing can reach stdout: exit 2 is a blocking error for the host, never an empty permit.
+  try {
+    fs.writeSync(2, reason + "\n");
+  } catch {
+    // nothing left to report to
+  }
+  process.exit(2);
+}
+
+function writeDecisionSync(output) {
+  // On POSIX the pipe behind fd 1 is non-blocking once process.stdout exists; a momentarily full
+  // pipe answers EAGAIN, which is retried briefly rather than treated as a dead host.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.writeSync(1, output);
+      return;
+    } catch (error) {
+      if (!(error && error.code === "EAGAIN") || attempt >= 40) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+}
 
 function deny(reason) {
   if (answered) {
-    // The bundle already answered but is still alive (a lingering handle): its decision stands,
-    // and the process ends now instead of running into the host timeout.
-    process.exit(0);
+    // The bundle already wrote its decision but is still alive (a lingering handle): its decision
+    // stands. On POSIX a pipe stdout is asynchronous, so the bytes may still be queued; an empty
+    // write's callback fires once everything before it has drained, and only then does the process
+    // end. If the pipe broke or never drains, exit 2 (a blocking error) rather than a permit-shaped
+    // 0 or a wait for the host timeout.
+    if (stdoutBroken) exitBlocking(reason);
+    setTimeout(() => process.exit(2), 2000).unref();
+    stdoutWrite("", (error) => process.exit(error ? 2 : 0));
+    return;
   }
   answered = true;
   const output =
@@ -46,17 +82,30 @@ function deny(reason) {
       },
     }) + "\n";
   try {
-    fs.writeSync(1, output);
+    writeDecisionSync(output);
     process.exit(0);
   } catch {
-    // stdout is gone: exit 2 is a blocking error for the host, never an empty permit.
-    try {
-      fs.writeSync(2, reason + "\n");
-    } catch {
-      // nothing left to report to
-    }
-    process.exit(2);
+    exitBlocking(reason);
   }
+}
+
+// Installing the stdout guard touches process.stdout, which can itself throw when fd 1 is closed at
+// spawn (EBADF); that must end as a blocking error, not as node's default exit 1 with no output.
+try {
+  stdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.on("error", () => {
+    stdoutBroken = true;
+  });
+  process.stdout.write = function (chunk, encoding, callback) {
+    const text = typeof chunk === "string" ? chunk : String(chunk);
+    if (text.includes(DECISION_MARKER)) {
+      answered = true;
+      return stdoutWrite(chunk, encoding, callback);
+    }
+    return process.stderr.write(chunk, encoding, callback);
+  };
+} catch {
+  exitBlocking("Atbash ERROR: the hook could not attach to the host's output.");
 }
 
 function resolveDeadlineMs(raw) {

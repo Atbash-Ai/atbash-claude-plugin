@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -93,6 +93,7 @@ export async function buildMarketplace() {
       join(dirname(sdkPackagePath), "LICENSE"),
       join(stagingDir, "licenses", "atbash-sdk.LICENSE"),
     );
+    await chmod(join(stagingDir, "licenses", "atbash-sdk.LICENSE"), 0o644);
 
     const platforms = {};
     for (const [platform, packageName] of Object.entries(nativePackages)) {
@@ -118,7 +119,16 @@ export async function buildMarketplace() {
       const destinationDir = join(stagingDir, "native", platform);
       const destination = join(destinationDir, "atbash.node");
       await mkdir(destinationDir, { recursive: true });
-      await copyFile(containedNativePath(extractDir, nativeFile.path), destination);
+      const nativeSource = containedNativePath(extractDir, nativeFile.path);
+      // A path check is not a file check: a symlink inside the package would be followed by copyFile.
+      if (!lstatSync(nativeSource).isFile()) {
+        throw new Error(
+          `Refusing native file ${JSON.stringify(nativeFile.path)}: not a regular file.`,
+        );
+      }
+      await copyFile(nativeSource, destination);
+      // Modes are part of what CI diffs against the committed runtime; the tarball's mode is not ours.
+      await chmod(destination, 0o644);
 
       const digest = createHash("sha256")
         .update(await readFile(destination))
@@ -134,6 +144,7 @@ export async function buildMarketplace() {
       `${JSON.stringify({ sdkVersion, platforms }, null, 2)}\n`,
       "utf8",
     );
+    await chmod(join(stagingDir, "manifest.json"), 0o644);
 
     // Swap: the committed runtime is moved aside, never deleted, until the new one is in place.
     await rm(previousDir, { force: true, recursive: true });
@@ -153,6 +164,18 @@ export async function buildMarketplace() {
   }
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run the build only when this file is the script node was started with. Both sides are resolved
+// through realpath so a drive-letter case or a symlinked checkout cannot turn the build into a
+// silent no-op (which would leave CI's runtime diff comparing a stale tree and passing).
+function isEntryPoint() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   await buildMarketplace();
 }
