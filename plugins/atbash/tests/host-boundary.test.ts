@@ -38,11 +38,21 @@ async function startJudge({ delayMs }: JudgeOptions) {
       res.setHeader("content-type", "application/json");
       const answer = (body: unknown) => setTimeout(() => res.end(JSON.stringify(body)), delayMs);
       if (url.pathname === "/api/ai/exists") {
-        answer({ registered: true, pubkey: url.searchParams.get("pubkey"), org_encryption_pubkey: null });
+        answer({
+          registered: true,
+          pubkey: url.searchParams.get("pubkey"),
+          org_encryption_pubkey: null,
+        });
       } else if (url.pathname === "/api/risk-engine") {
         answer({ policy: "", is_custom: false, default_policy: "default", is_jailed: false });
       } else if (url.pathname === "/api/v1/judge") {
-        answer({ verdict: "ALLOW", action_type: "allow", allow: true, reason: "routine", tool_call_id: "tc-1" });
+        answer({
+          verdict: "ALLOW",
+          action_type: "allow",
+          allow: true,
+          reason: "routine",
+          tool_call_id: "tc-1",
+        });
       } else {
         res.statusCode = 404;
         res.end("{}");
@@ -107,7 +117,10 @@ test("a slow-but-alive judge is denied before the host's 35 s hook timeout", asy
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
     assert.match(result.stdout, /did not finish/, result.stdout);
-    assert.ok(result.wallMs < 34_000, `hook answered after ${result.wallMs} ms, past the host timeout`);
+    assert.ok(
+      result.wallMs < 34_000,
+      `hook answered after ${result.wallMs} ms, past the host timeout`,
+    );
     assert.ok(judge.hits.length >= 1, "the judge was never contacted");
   } finally {
     await judge.close();
@@ -189,8 +202,15 @@ test("a fast judge is still answered normally through the shim", async () => {
       ATBASH_AGENT_KEY: generateKeypair().priv_key,
     });
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, "", `expected a permit (empty stdout), got ${JSON.stringify(result.stdout)}`);
-    assert.ok(judge.hits.some((h) => h.endsWith("/api/v1/judge")), `judge not consulted: ${judge.hits.join(", ")}`);
+    assert.equal(
+      result.stdout,
+      "",
+      `expected a permit (empty stdout), got ${JSON.stringify(result.stdout)}`,
+    );
+    assert.ok(
+      judge.hits.some((h) => h.endsWith("/api/v1/judge")),
+      `judge not consulted: ${judge.hits.join(", ")}`,
+    );
   } finally {
     await judge.close();
   }
