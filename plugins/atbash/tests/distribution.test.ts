@@ -14,6 +14,7 @@ test("built hook is self-contained and fails closed", () => {
     encoding: "utf8",
     env: {
       ...process.env,
+      ATBASH_HOOK_DEADLINE_MS: "",
       ATBASH_HOOK_TIMEOUT_MS: "invalid",
     },
     input: JSON.stringify(makeHookInput()),
@@ -58,6 +59,7 @@ test("marketplace runtime includes every supported native target", () => {
     encoding: "utf8",
     env: {
       ...process.env,
+      ATBASH_HOOK_DEADLINE_MS: "",
       ATBASH_HOOK_TIMEOUT_MS: "invalid",
     },
     input: JSON.stringify(makeHookInput()),

@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { copyFile, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const nativePackages = {
@@ -64,6 +64,18 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
 
   // The shim is shipped verbatim, never bundled or minified: it has to load when the bundle cannot.
   await copyFile("src/hook/shim.cjs", join(outdir, "pre-tool-use.cjs"));
+
+  // File modes are part of what CI diffs against the committed runtime; set them explicitly so a
+  // build reproduces byte-for-byte and mode-for-mode on every platform and umask: the hashbang
+  // bundles are executable (as esbuild marks them), the shim and the library are not.
+  for (const [entry, mode] of [
+    ["index", 0o644],
+    ["pre-tool-use", 0o644],
+    ["pre-tool-use-main", 0o755],
+    ["status", 0o755],
+  ]) {
+    await chmod(join(outdir, `${entry}.cjs`), mode);
+  }
 }
 
 export async function writeNativeLoader(outdir) {

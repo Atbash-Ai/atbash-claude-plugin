@@ -8,30 +8,55 @@
 //      alive judge outlives the host timeout and the host proceeds;
 //   2. any failure of the bundled hook itself - a load error, an uncaught exception, an unhandled
 //      rejection - becomes a deny with exit 0 instead of exit 1 with nothing on stdout.
-// The deny text is fixed here; nothing from the failure is echoed to the host.
+// The deny text is fixed here; nothing from the failure is echoed to the host. The deny is written
+// synchronously, so it cannot be lost to an undrained pipe; if stdout cannot be written at all the
+// shim exits 2 (a blocking error for the host) rather than 0 with an empty, permit-shaped stdout.
+// What this cannot close: a synchronous hang inside the bundle or the native addon keeps the event
+// loop from ever running the deadline timer; only the host timeout ends that.
+const fs = require("node:fs");
+
 const DEFAULT_DEADLINE_MS = 28000;
 const MIN_DEADLINE_MS = 1000;
-const MAX_DEADLINE_MS = 34000;
+// Under the 30 s SDK request budget and 5 s under the host's 35 s timeout: node start-up and the
+// bundle load (~0.2 s warm, more under a cold cache or a scanner) must fit inside the margin.
+const MAX_DEADLINE_MS = 30000;
 
+// Anything the bundle writes to stdout is its decision (a deny, or the empty permit is silence);
+// once a byte is out, the shim must never add a second JSON object after it.
 let answered = false;
-function deny(reason) {
-  if (answered) return;
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = function (chunk, encoding, callback) {
   answered = true;
-  const output = JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: reason,
-    },
-  });
-  try {
-    process.stdout.write(output + "\n", () => process.exit(0));
-  } catch {
+  return stdoutWrite(chunk, encoding, callback);
+};
+
+function deny(reason) {
+  if (answered) {
+    // The bundle already answered but is still alive (a lingering handle): its decision stands,
+    // and the process ends now instead of running into the host timeout.
     process.exit(0);
   }
-  // Belt and braces: if stdout never drains, still leave with 0 (the host treats other codes as
-  // a non-blocking error and proceeds).
-  setTimeout(() => process.exit(0), 1000).unref();
+  answered = true;
+  const output =
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: reason,
+      },
+    }) + "\n";
+  try {
+    fs.writeSync(1, output);
+    process.exit(0);
+  } catch {
+    // stdout is gone: exit 2 is a blocking error for the host, never an empty permit.
+    try {
+      fs.writeSync(2, reason + "\n");
+    } catch {
+      // nothing left to report to
+    }
+    process.exit(2);
+  }
 }
 
 function resolveDeadlineMs(raw) {
@@ -53,11 +78,16 @@ if (deadlineMs === null) {
       ".",
   );
 } else {
-  // unref: a hook that answers normally lets the event loop drain and exits on its own; only a
-  // hook still waiting on the judge keeps the loop alive long enough for this to fire.
-  setTimeout(() => {
-    deny("Atbash ERROR: the safety check did not finish before the host's hook timeout.");
-  }, deadlineMs).unref();
+  // The deadline counts from process start, not from here: node's own start-up is inside the
+  // host's clock too. unref: a hook that answers normally lets the event loop drain and exits on
+  // its own; only a hook still waiting on the judge keeps the loop alive long enough for this.
+  const elapsedMs = Math.ceil(process.uptime() * 1000);
+  setTimeout(
+    () => {
+      deny("Atbash ERROR: the safety check did not finish before the host's hook timeout.");
+    },
+    Math.max(0, deadlineMs - elapsedMs),
+  ).unref();
 
   process.on("uncaughtException", () => {
     deny("Atbash ERROR: the hook crashed before a decision was returned.");

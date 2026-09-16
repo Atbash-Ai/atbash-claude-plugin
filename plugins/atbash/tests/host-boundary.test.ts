@@ -130,9 +130,16 @@ test("a slow-but-alive judge is denied before the host's 35 s hook timeout", asy
 test("the shipped entry point is a small un-bundled shim in front of the bundled hook", () => {
   // The shim is what makes the next two tests possible: it must not itself be the megabyte bundle
   // whose load failure it guards against.
-  const size = statSync(ENTRY).size;
-  assert.ok(size < 16_384, `${ENTRY} is ${size} bytes - it should be the shim, not the bundle`);
-  assert.match(readFileSync(ENTRY, "utf8"), /pre-tool-use-main\.cjs/);
+  for (const entry of [ENTRY, "runtime/pre-tool-use.cjs"]) {
+    const size = statSync(entry).size;
+    assert.ok(size < 16_384, `${entry} is ${size} bytes - it should be the shim, not the bundle`);
+    assert.match(readFileSync(entry, "utf8"), /pre-tool-use-main\.cjs/);
+  }
+  // The shipped copy is the source shim, byte for byte.
+  assert.equal(
+    readFileSync("runtime/pre-tool-use.cjs", "utf8"),
+    readFileSync("src/hook/shim.cjs", "utf8"),
+  );
 });
 
 function withDamagedRuntime(damage: (dir: string) => void): string {
@@ -232,10 +239,97 @@ test("a fast judge is still answered normally through the shim", async () => {
       `expected a permit (empty stdout), got ${JSON.stringify(result.stdout)}`,
     );
     assert.ok(
+      result.wallMs < 5_000,
+      `a permit took ${result.wallMs} ms - a lingering handle would turn every allow into a deadline deny`,
+    );
+    assert.ok(
       judge.hits.some((h) => h.endsWith("/api/v1/judge")),
       `judge not consulted: ${judge.hits.join(", ")}`,
     );
   } finally {
     await judge.close();
+  }
+});
+
+test("a decision the bundle already wrote is never followed by a second one", async () => {
+  // The bundle denies, then stays alive on a lingering handle past the deadline. The host must see
+  // exactly one JSON decision (two concatenated objects are unparseable, and unparseable stdout on
+  // exit 0 is a non-blocking message: the tool would run), and the process must still end.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      'process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "bundle deny" } }) + "\\n");\nsetInterval(() => {}, 1000);\n',
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "1500" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(
+      result.stdout.match(/"permissionDecision":/g)?.length,
+      1,
+      `stdout: ${JSON.stringify(result.stdout)}`,
+    );
+    assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
+    assert.match(result.stdout, /bundle deny/);
+    assert.ok(result.wallMs < 8_000, `the process lingered ${result.wallMs} ms after its decision`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("the largest accepted deadline stays under the host timeout and 34000 is refused", async () => {
+  // A judge that never answers; at the maximum the hook must still answer with margin to 35 s.
+  const judge = await startJudge({ delayMs: 120_000 });
+  try {
+    const atMax = await runHook(ENTRY, {
+      ATBASH_ENDPOINT: judge.endpoint,
+      ATBASH_AGENT_KEY: generateKeypair().priv_key,
+      ATBASH_HOOK_DEADLINE_MS: "30000",
+    });
+    assert.equal(atMax.code, 0, atMax.stderr);
+    assert.match(atMax.stdout, /did not finish/, atMax.stdout);
+    assert.ok(atMax.wallMs < 33_000, `the maximum deadline answered after ${atMax.wallMs} ms`);
+  } finally {
+    await judge.close();
+  }
+  const tooClose = await runHook(ENTRY, { ATBASH_HOOK_DEADLINE_MS: "34000" });
+  assert.equal(tooClose.code, 0, tooClose.stderr);
+  assert.match(
+    tooClose.stdout,
+    /ATBASH_HOOK_DEADLINE_MS must be an integer between 1000 and 30000/,
+    tooClose.stdout,
+  );
+});
+
+test("when stdout cannot be written the shim exits 2, never 0 with an empty output", async () => {
+  // The parent closes its end of the pipe before the deadline: the deny has nowhere to go, so the
+  // hook must end with exit code 2 (a blocking error for the host) and the reason on stderr.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), "setInterval(() => {}, 1000);\n");
+  });
+  try {
+    const result = await new Promise<RunResult>((resolve) => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1000" },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d));
+      child.stdout.destroy();
+      child.stdin.end(JSON.stringify(makeHookInput()));
+      child.on("close", (code) =>
+        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started }),
+      );
+    });
+    assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stderr, /did not finish/, result.stderr);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
   }
 });

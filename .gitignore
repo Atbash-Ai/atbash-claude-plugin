@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-tests/
 plugins/atbash/runtime.build/
+plugins/atbash/runtime.old/
 coverage/
 
 .env
