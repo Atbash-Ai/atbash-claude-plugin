@@ -182,6 +182,8 @@ test("a runtime whose promise rejects unhandled still denies with exit 0", async
     const result = await runHook(join(dir, "pre-tool-use.cjs"), {}, dir);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, DENY_SHAPE, result.stdout);
+    assert.match(result.stdout, /crashed/, result.stdout);
+    assert.doesNotMatch(result.stdout, /rejected/, "the error text must not reach the host");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -192,6 +194,28 @@ test("an invalid ATBASH_HOOK_DEADLINE_MS denies instead of running without a dea
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, DENY_SHAPE, result.stdout);
   assert.match(result.stdout, /ATBASH_HOOK_DEADLINE_MS/, result.stdout);
+});
+
+test("a valid custom ATBASH_HOOK_DEADLINE_MS is the deadline that actually fires", async () => {
+  // Same slow judge as the first case; with a 1.5 s deadline the deny must come at about 1.5 s,
+  // not at the 28 s default and not from the SDK's own per-request budget.
+  const judge = await startJudge({ delayMs: 20_000 });
+  try {
+    const result = await runHook(ENTRY, {
+      ATBASH_ENDPOINT: judge.endpoint,
+      ATBASH_AGENT_KEY: generateKeypair().priv_key,
+      ATBASH_HOOK_DEADLINE_MS: "1500",
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /did not finish/, result.stdout);
+    assert.ok(result.wallMs >= 1_500, `denied after only ${result.wallMs} ms`);
+    assert.ok(
+      result.wallMs < 8_000,
+      `denied after ${result.wallMs} ms - the custom deadline was not used`,
+    );
+  } finally {
+    await judge.close();
+  }
 });
 
 test("a fast judge is still answered normally through the shim", async () => {
