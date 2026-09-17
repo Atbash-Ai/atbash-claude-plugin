@@ -1132,53 +1132,48 @@ test("a small deny to a host that never reads is delivered into the pipe and the
   }
 });
 
-test("a decision the host never drains ends with a blocking exit at the drain budget", async () => {
-  // Defence in depth behind the byte bound: should a host ever hand the hook a pipe smaller than
-  // the bound, the fd-1 write would not complete. No real pipe here is that small, so the
-  // transport is replaced at the file-descriptor level - fs.write on fd 1 answers EAGAIN for good
-  // (what a full non-blocking pipe answers) - and the shim's retry loop must give up at the drain
-  // budget with a blocking exit and the reason on stderr, DRAIN_GRACE_MS past the deadline: never
-  // a permit-shaped 0, never a wait for the host's timeout.
+test("a transport that never accepts the decision ends with a blocking exit, never a permit", async () => {
+  // Defence in depth behind the byte bound: should the synchronous write to fd 1 never be
+  // accepted (a full non-blocking pipe answers EAGAIN; here the transport is replaced at the
+  // file-descriptor level so it answers EAGAIN for good), the retry gives up within about a
+  // second and the shim ends with exit 2 and the reason on stderr - nothing on stdout, never a
+  // permit-shaped 0, never a wait for the host's timeout.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "decoy.cjs"),
       [
         'const fs = require("node:fs");',
-        "const original = fs.write;",
-        "fs.write = function (fd, ...rest) {",
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, ...rest) {",
         "  if (fd !== 1) return original.call(this, fd, ...rest);",
-        "  const callback = rest[rest.length - 1];",
         '  const error = new Error("EAGAIN: resource temporarily unavailable, write");',
         '  error.code = "EAGAIN";',
-        "  setImmediate(() => callback(error));",
+        "  throw error;",
         "};",
       ].join("\n") + "\n",
     );
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "queued for a host that never drains" } }));\nsetInterval(() => {}, 1000);\n`,
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a transport that never accepts" } }));\nsetInterval(() => {}, 1000);\n`,
     );
   });
   try {
     const result = await runHook(
       join(dir, "pre-tool-use.cjs"),
       {
-        ATBASH_HOOK_DEADLINE_MS: "1000",
+        ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
       },
       dir,
     );
     assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
-    assert.match(result.stderr, /did not read the decision in time/);
+    assert.match(result.stderr, /could not be delivered/);
     assert.equal(
       result.stdout,
       "",
       "nothing reached the host: the transport never accepted a byte",
     );
-    assert.ok(
-      result.wallMs >= 2_500 && result.wallMs < 8_000,
-      `the watchdog fired at ${result.wallMs} ms (expected about 3 s: deadline 1 s + 2 s grace)`,
-    );
+    assert.ok(result.wallMs < 5_000, `did not give up: ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1186,17 +1181,14 @@ test("a decision the host never drains ends with a blocking exit at the drain bu
 
 test("a decision cut short by an in-process exit is never a permit", async () => {
   // The bundle answers a deny and, in the same synchronous turn, calls process.exit(0): the write
-  // callback cannot have run yet, so the decision was never confirmed as drained. The exit backstop
-  // must end the process with a blocking exit code, never a permit-shaped 0 - whatever the pipe
-  // did with the bytes (Windows completes the write synchronously; a POSIX pipe may still hold
-  // them). Pipe size does not matter here, which is what makes the case reproducible on every
-  // host; before the `delivered` tracking the process ended 0.
+  // callback cannot have run yet. The queued write still completes during shutdown (the deny is
+  // bounded under the pipe), so the host gets one complete deny - and the exit code must be 0,
+  // the one both hosts block on: a 2 here let Codex 0.154.0 run the tool call with the deny on
+  // stdout (measured). Never a truncated or a second decision.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "cut short in the same turn" } }));
-process.exit(0);
-`,
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "cut short in the same turn" } }));\nprocess.exit(0);\n`,
     );
   });
   try {
@@ -1207,16 +1199,65 @@ process.exit(0);
     );
     assert.equal(
       result.code,
-      2,
+      0,
       `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}, stderr ${JSON.stringify(result.stderr)}`,
     );
-    // Whatever reached the host is at most one decision, never a second or a truncated one.
-    if (result.stdout !== "") {
-      assert.doesNotThrow(() => JSON.parse(result.stdout));
-      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
-    }
+    const decision = JSON.parse(result.stdout) as {
+      hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+    };
+    assert.equal(decision.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(
+      decision.hookSpecificOutput.permissionDecisionReason,
+      "cut short in the same turn",
+    );
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
   } finally {
     rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a forged decided mark does not silence the exit backstop or the refusal", async () => {
+  // The mark that says "a decision is on stdout" lives on the channel function, which a preload
+  // cannot create; the former global symbol is ignored. A preload that sets that symbol before a
+  // silent bundle must still get the backstop deny, and one that also takes the channel with a
+  // function carrying a forged mark must still get the refusal deny.
+  const cases = [
+    {
+      decoy: `globalThis[Symbol.for("atbash.hook.decided")] = true;\n`,
+      bundle: "module.exports = 1;\n",
+      reason: /ended without a decision/,
+    },
+    {
+      decoy: `globalThis[Symbol.for("atbash.hook.decided")] = true; const f = function () {}; f.decided = true; ${ANSWER} = f;\n`,
+      bundle: "module.exports = 1;\n",
+      reason: /channel was already taken/,
+    },
+  ];
+  for (const c of cases) {
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(join(d, "decoy.cjs"), c.decoy);
+      writeFileSync(join(d, "pre-tool-use-main.cjs"), c.bundle);
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        {
+          ATBASH_HOOK_DEADLINE_MS: "6000",
+          NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+        },
+        dir,
+      );
+      assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+      assert.match(
+        result.stdout,
+        DENY_SHAPE,
+        `no deny on stdout: ${JSON.stringify(result.stdout)}`,
+      );
+      assert.match(result.stdout, c.reason);
+      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
   }
 });
 
