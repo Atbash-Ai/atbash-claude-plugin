@@ -57,7 +57,12 @@ try {
       tempDir,
       "--json",
     ]);
-    const [metadata] = JSON.parse(packOutput);
+    // npm pack --json's shape changed across major versions: pre-npm-12 returns
+    // an array of pack results, npm 12+ returns an object keyed by package name.
+    // Accept either so a local contributor's own npm (or a future CI bump)
+    // can't silently break this.
+    const packResult = JSON.parse(packOutput);
+    const metadata = Array.isArray(packResult) ? packResult[0] : Object.values(packResult)[0];
     const nativeFile = metadata?.files?.find((file) => file.path.endsWith(".node"));
     if (metadata?.filename === undefined || nativeFile?.path === undefined) {
       throw new Error(`${packageName}@${sdkVersion} did not contain a native .node file.`);
