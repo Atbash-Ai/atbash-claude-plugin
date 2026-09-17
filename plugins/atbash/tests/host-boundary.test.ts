@@ -1076,7 +1076,7 @@ test("an oversized reason is cut to the byte bound, escaping and multi-byte char
   }
 });
 
-test("a refused channel is blocking even when process.exit was patched away", async () => {
+test("a refused channel still denies on stdout even when process.exit was patched away", async () => {
   // A decoy that takes the channel AND no-ops process.exit: the refusal's exit does not end the
   // process, this load's backstop is silent (refused), and before the fix the loop drained to
   // exit 0 with an empty stdout - a permit. The deny is now on stdout before the exit is tried,
@@ -1127,6 +1127,58 @@ test("a small deny to a host that never reads is delivered into the pipe and the
     assert.equal(result.killed, false, `hung for ${result.wallMs} ms`);
     assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
     assert.ok(result.wallMs < 2_500, `did not end at once: ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a decision the host never drains ends with a blocking exit at the drain budget", async () => {
+  // Defence in depth behind the byte bound: should a host ever hand the hook a pipe smaller than
+  // the bound, the fd-1 write would not complete. No real pipe here is that small, so the
+  // transport is replaced at the file-descriptor level - fs.write on fd 1 answers EAGAIN for good
+  // (what a full non-blocking pipe answers) - and the shim's retry loop must give up at the drain
+  // budget with a blocking exit and the reason on stderr, DRAIN_GRACE_MS past the deadline: never
+  // a permit-shaped 0, never a wait for the host's timeout.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.write;",
+        "fs.write = function (fd, ...rest) {",
+        "  if (fd !== 1) return original.call(this, fd, ...rest);",
+        "  const callback = rest[rest.length - 1];",
+        '  const error = new Error("EAGAIN: resource temporarily unavailable, write");',
+        '  error.code = "EAGAIN";',
+        "  setImmediate(() => callback(error));",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "queued for a host that never drains" } }));\nsetInterval(() => {}, 1000);\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "1000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stderr, /did not read the decision in time/);
+    assert.equal(
+      result.stdout,
+      "",
+      "nothing reached the host: the transport never accepted a byte",
+    );
+    assert.ok(
+      result.wallMs >= 2_500 && result.wallMs < 8_000,
+      `the watchdog fired at ${result.wallMs} ms (expected about 3 s: deadline 1 s + 2 s grace)`,
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
