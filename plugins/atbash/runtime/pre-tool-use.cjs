@@ -23,8 +23,11 @@
 // can find it and call it; that code could equally patch process.exit or write to fd 1, so it is
 // no new trust boundary - the channel only ever accepts a deny, never an allow, and a stray permit
 // neither disarms the deadline nor outranks a later deny. A channel that some other code installed
-// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a deny, never
-// adopted as the owner of the decision.
+// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a deny, whatever it
+// looks like: the shim owns the channel or it decides nothing else. The shim's own stdout write is
+// synchronous on Windows pipes, so a host that never reads a deny larger than the pipe can hold
+// would block the shim there; the reason cap below keeps every deny under the size measured to
+// block (about 128 KiB), and past that only the host timeout ends the process.
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -35,10 +38,25 @@ const MAX_DEADLINE_MS = 30000;
 // A queued decision waits for the host to read it until this long past the deadline, then the shim
 // gives up with a blocking exit. 30 s + 2 s stays under the host's 35 s timeout.
 const DRAIN_GRACE_MS = 2000;
-// The longest reason forwarded to the host. A judge verdict is a few hundred characters; the cap
-// bounds what a bundle can queue and so bounds the drain the grace period above must cover.
-const MAX_REASON_CHARS = 262144;
+// The longest reason forwarded to the host. A judge verdict is a few hundred characters (the
+// bundle's own cap is 800); this bounds what a swapped or damaged bundle can queue and so bounds
+// the drain the grace period above must cover. Above the Linux pipe buffer (64 KiB), so a queued
+// deny can still be seen to drain or not drain there; under the size at which a Windows
+// synchronous pipe write to a host that never reads blocks the process (120,000 characters passed,
+// 160,000 blocked, node 22).
+const MAX_REASON_CHARS = 81920;
 const CHANNEL = Symbol.for("atbash.hook.answer");
+
+function resolveDeadlineMs(raw) {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_DEADLINE_MS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < MIN_DEADLINE_MS || parsed > MAX_DEADLINE_MS) {
+    return null;
+  }
+  return parsed;
+}
+// Resolved before anything below can run, so no path can reach the drain budget before it exists.
+const deadlineMs = resolveDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS);
 
 // stdout is the host's decision channel, and only the shim writes to it. The bundled hook hands its
 // decision to the shim in-process, through the function installed below under a registered symbol
@@ -75,13 +93,11 @@ function isDecision(text) {
 // "" from anywhere in-process must never swallow the real decision.
 let decided = false;
 let permitted = false;
-// False only when the channel already holds a function this shim itself installed: a second load
-// of the same file in the same process (two paths are two require-cache entries). The first load
-// then owns the channel, the exit backstop, the deadline and the bundle, and this load does
-// nothing. Anything else already on the channel is foreign, and that is a deny (below).
-let firstLoad = true;
 // Set once a queued decision has fully left the process (the write callback ran without error).
 let delivered = false;
+// Set when this load found the channel taken and ended the process with a blocking exit: the
+// exit backstop below then belongs to whoever owns the channel, and this load's must stay silent.
+let refused = false;
 
 // The bundle's side of the channel.
 function answer(output) {
@@ -128,10 +144,13 @@ function answer(output) {
 }
 
 function drainBudgetMs() {
-  // Until DRAIN_GRACE_MS past the deadline (which counts from process start), at least the grace.
+  // Until DRAIN_GRACE_MS past the deadline (which counts from process start), at least the grace -
+  // but never past DRAIN_GRACE_MS after the largest deadline: a decision queued late (the loop was
+  // starved by a synchronous hang) is not waited for beyond the host's timeout.
   const budget = deadlineMs === null ? DEFAULT_DEADLINE_MS : deadlineMs;
-  const remaining = budget - Math.ceil(process.uptime() * 1000);
-  return Math.max(0, remaining) + DRAIN_GRACE_MS;
+  const uptimeMs = Math.ceil(process.uptime() * 1000);
+  const ceiling = Math.max(0, MAX_DEADLINE_MS + DRAIN_GRACE_MS - uptimeMs);
+  return Math.min(Math.max(0, budget - uptimeMs) + DRAIN_GRACE_MS, ceiling);
 }
 // Set when the stdout pipe reports an error after the bundle's decision was queued (the host went
 // away): the decision was lost, and the decided branch below must not end with a permit-shaped 0.
@@ -177,19 +196,26 @@ function deny(reason) {
     // empty write's callback fires once everything before it has drained, and only then does the
     // process end. If the pipe broke or never drains, exit 2 (a blocking error) rather than a
     // permit-shaped 0 or a wait for the host timeout.
-    if (stdoutBroken) exitBlocking(reason);
+    if (stdoutBroken) {
+      exitBlocking(reason);
+      return;
+    }
     setTimeout(
       () => exitBlocking("Atbash ERROR: the host did not read the decision in time."),
-      DRAIN_GRACE_MS,
+      drainBudgetMs(),
     ).unref();
-    stdoutWrite("", (error) => {
-      if (error) {
-        exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
-        return;
-      }
-      delivered = true;
-      process.exit(0);
-    });
+    try {
+      stdoutWrite("", (error) => {
+        if (error) {
+          exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+          return;
+        }
+        delivered = true;
+        process.exit(0);
+      });
+    } catch {
+      exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+    }
     return;
   }
   decided = true;
@@ -226,13 +252,11 @@ function denyJson(reason) {
 // exits 0 with an empty stdout, and the host reads a permit. So the last word is here: at exit,
 // no decision and no permit is a deny written synchronously with exit 0; a decision whose stdout
 // write errored (the host went away) or never drained (in-process code ended the process first)
-// is a blocking exit code rather than a permit-shaped 0; a permit stays silence. On a second load
-// of the shim (firstLoad false, decided below) the first load's listener owns the exit and this
-// one is silent - two listeners would write two decisions, which the host cannot parse. What this
-// cannot cover: process.abort or a signal from the native addon ends the process without running
-// exit listeners (a non-0/2 exit, which the host treats as non-blocking).
+// is a blocking exit code rather than a permit-shaped 0; a permit stays silence. What this cannot
+// cover: process.abort or a signal from the native addon ends the process without running exit
+// listeners (a non-0/2 exit, which the host treats as non-blocking).
 process.on("exit", () => {
-  if (!firstLoad) return;
+  if (refused) return;
   if (decided) {
     // A decision that was queued but never drained (the host went away, or in-process code called
     // process.exit while the deny was still in the pipe) must not end as a permit-shaped 0 with
@@ -256,24 +280,23 @@ process.on("exit", () => {
   }
 });
 
-// The channel is installed once, branded as this shim's own. A second load of the shim in the same
-// process (two paths to the same file are two require-cache entries) finds the branded function
-// and steps aside. Anything else already on the channel - a function some preloaded module put
-// there (NODE_OPTIONS=--require, a patched host), or a non-function value - is foreign: the
-// bundle's deny would go to that code, not to the host, so the tool call is denied here and now.
-// The brand is not a secret (in-process code can forge it; see the boundary note at the top): it
-// distinguishes the shim's own second load from everything else, so that no pre-installed
-// function turns the shim into a silent permit.
+// The channel is installed once, by this load, or the tool call is denied. Anything already on
+// the channel - a function some preloaded module put there (NODE_OPTIONS=--require, a patched
+// host), a second copy of this shim required under another path, a non-function value - means the
+// bundle's deny would go to that code, not to the host, so the call is refused here and now. No
+// brand or descriptor check can tell the shim's own second load from a decoy that copied it (both
+// are in-process code, which could equally patch process.exit), so there is no exemption: a
+// second load is a refusal, which fails closed, never a silent permit. The refusal is a blocking
+// exit (2, reason on stderr) rather than a deny on stdout: on a second load the first load's exit
+// backstop still writes its own deny, and two decisions on stdout are unparseable - a permit.
+// With the blocking exit, whichever load owns the backstop writes the one deny (exit 0), and a
+// process with no backstop at all (a foreign owner) ends with the blocking code. Nothing in the
+// plugin loads the shim twice.
 try {
-  const existing = globalThis[CHANNEL];
-  if (existing !== undefined) {
-    if (typeof existing === "function" && existing.atbashShim === true) {
-      firstLoad = false;
-    } else {
-      deny("Atbash ERROR: the hook's decision channel was already taken.");
-    }
+  if (globalThis[CHANNEL] !== undefined) {
+    refused = true;
+    exitBlocking("Atbash ERROR: the hook's decision channel was already taken.");
   } else {
-    Object.defineProperty(answer, "atbashShim", { value: true });
     Object.defineProperty(globalThis, CHANNEL, {
       value: answer,
       writable: false,
@@ -287,9 +310,9 @@ try {
 
 // Installing the stdout guard touches process.stdout, which can itself throw when fd 1 is closed at
 // spawn (EBADF); that must end as a blocking error, not as node's default exit 1 with no output.
-// Only the first load installs it: a second load would wrap the diverter again and add a second
-// error listener - harmless, but a second load does nothing at all.
-if (firstLoad) {
+// Skipped once a decision was already made above (a refused channel): with process.exit patched
+// away in-process nothing after this point may run - not the guard, not the bundle.
+if (!decided) {
   try {
     stdoutWrite = process.stdout.write.bind(process.stdout);
     process.stdout.on("error", () => {
@@ -306,18 +329,8 @@ if (firstLoad) {
   }
 }
 
-function resolveDeadlineMs(raw) {
-  if (raw === undefined || raw.trim() === "") return DEFAULT_DEADLINE_MS;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < MIN_DEADLINE_MS || parsed > MAX_DEADLINE_MS) {
-    return null;
-  }
-  return parsed;
-}
-
-const deadlineMs = resolveDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS);
-if (!firstLoad) {
-  // A second load: the first one owns the process.
+if (decided) {
+  // The channel was refused above: no deadline, no handlers, no bundle. The deny is on its way.
 } else if (deadlineMs === null) {
   deny(
     "Atbash ERROR: ATBASH_HOOK_DEADLINE_MS must be an integer between " +
