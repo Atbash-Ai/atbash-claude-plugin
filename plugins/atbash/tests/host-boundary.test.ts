@@ -24,11 +24,17 @@ import { makeHookInput } from "./fixtures.js";
 const ENTRY = "dist/pre-tool-use.cjs";
 const DENY_SHAPE = /"permissionDecision":"deny"/;
 
+// How the bundled hook hands its decision to the shim: an in-process function the shim installs
+// before loading the bundle (src/hook/protocol.ts HOOK_ANSWER_CHANNEL). Fixtures that stand in for
+// the bundle answer the same way; stdout is no longer a decision channel at all.
+const ANSWER = 'globalThis[Symbol.for("atbash.hook.answer")]';
+
 interface JudgeOptions {
   delayMs: number;
+  verdict?: "ALLOW" | "BLOCK";
 }
 
-async function startJudge({ delayMs }: JudgeOptions) {
+async function startJudge({ delayMs, verdict = "ALLOW" }: JudgeOptions) {
   const hits: string[] = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -46,13 +52,23 @@ async function startJudge({ delayMs }: JudgeOptions) {
       } else if (url.pathname === "/api/risk-engine") {
         answer({ policy: "", is_custom: false, default_policy: "default", is_jailed: false });
       } else if (url.pathname === "/api/v1/judge") {
-        answer({
-          verdict: "ALLOW",
-          action_type: "allow",
-          allow: true,
-          reason: "routine",
-          tool_call_id: "tc-1",
-        });
+        answer(
+          verdict === "BLOCK"
+            ? {
+                verdict: "BLOCK",
+                action_type: "block",
+                allow: false,
+                reason: "denied by the test judge",
+                tool_call_id: "tc-1",
+              }
+            : {
+                verdict: "ALLOW",
+                action_type: "allow",
+                allow: true,
+                reason: "routine",
+                tool_call_id: "tc-1",
+              },
+        );
       } else {
         res.statusCode = 404;
         res.end("{}");
@@ -258,7 +274,7 @@ test("a decision the bundle already wrote is never followed by a second one", as
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      'process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "bundle deny" } }) + "\\n");\nsetInterval(() => {}, 1000);\n',
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "bundle deny" } }));\nsetInterval(() => {}, 1000);\n`,
     );
   });
   try {
@@ -374,7 +390,7 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      'const reason = "x".repeat(200000);\nprocess.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }) + "\\n");\nsetInterval(() => {}, 1000);\n',
+      `const reason = "x".repeat(200000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetInterval(() => {}, 1000);\n`,
     );
   });
   try {
@@ -445,23 +461,58 @@ test("a log line that merely contains the decision marker is diverted, not trust
   }
 });
 
-test("the shim recognises exactly what serializeDeny emits", async () => {
-  // The shim's isDecision and protocol.ts's serializeDeny are coupled by shape; pin it so a
-  // prettified or streamed serialization cannot silently turn every real deny into a diverted log.
-  const { serializeDeny } = await import("../src/hook/protocol.js");
+test("the shim accepts exactly what serializeDeny emits, over the answer channel", async () => {
+  // protocol.ts's serializeDeny, the channel name in protocol.ts, the shim's channel and its shape
+  // check are coupled; pin all four so a renamed symbol or a prettified serialization cannot turn
+  // every real deny into an "invalid decision" deny or a diverted log.
+  const protocol = (await import("../src/hook/protocol.js")) as Record<string, unknown> & {
+    serializeDeny: (reason: string) => string;
+  };
+  const { serializeDeny } = protocol;
+  assert.equal(protocol.HOOK_ANSWER_CHANNEL, Symbol.for("atbash.hook.answer"));
   const emitted = serializeDeny("Atbash ERROR: pinned");
   const parsed = JSON.parse(emitted) as { hookSpecificOutput: { permissionDecision: string } };
   assert.equal(parsed.hookSpecificOutput.permissionDecision, "deny");
-  assert.match(
-    readFileSync("src/hook/shim.cjs", "utf8"),
-    /hookSpecificOutput\?\.permissionDecision/,
-  );
-  // Drive the built shim with a bundle that writes exactly serializeDeny's output and lingers - as
-  // a string, as a Buffer and as a Uint8Array (a typed-array chunk must be decoded, not String()-ed).
+  const shim = readFileSync("src/hook/shim.cjs", "utf8");
+  assert.match(shim, /Symbol\.for\("atbash\.hook\.answer"\)/);
+  assert.match(shim, /hookSpecificOutput\?\.permissionDecision/);
+  // The built bundle answers through the channel, not stdout.
+  assert.match(readFileSync("dist/pre-tool-use-main.cjs", "utf8"), /atbash\.hook\.answer/);
+  // Drive the built shim with a bundle that answers exactly serializeDeny's output and lingers.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(${JSON.stringify(emitted)}); setInterval(() => {}, 1000);\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "1500" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), emitted.trim(), "the real deny must pass through untouched");
+    assert.ok(result.wallMs < 8_000, `the process lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a decision written to stdout instead of the answer channel is diverted, not trusted", async () => {
+  // The residual of the stdout-shape check: any library that managed to print an allow- or
+  // deny-shaped object on stdout would have been taken for the hook's decision. With the private
+  // channel, stdout carries nothing the shim trusts - a perfect decision printed there is a log
+  // line: diverted to stderr, and the deadline deny is what the host receives.
+  const { serializeDeny } = await import("../src/hook/protocol.js");
+  const emitted = serializeDeny("printed, not answered");
+  const permitShaped = JSON.stringify({
+    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+  });
   const writers = [
     `process.stdout.write(${JSON.stringify(emitted + "\n")});`,
-    `process.stdout.write(Buffer.from(${JSON.stringify(emitted + "\n")}));`,
-    `process.stdout.write(new Uint8Array(Buffer.from(${JSON.stringify(emitted + "\n")})));`,
+    `process.stdout.write(Buffer.from(${JSON.stringify(permitShaped + "\n")}));`,
+    `console.log(${JSON.stringify(permitShaped)});`,
   ];
   for (const writer of writers) {
     const dir = withDamagedRuntime((d) => {
@@ -474,15 +525,107 @@ test("the shim recognises exactly what serializeDeny emits", async () => {
         dir,
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.equal(
-        result.stdout.trim(),
-        emitted.trim(),
-        `the real deny must pass through untouched (${writer})`,
+      assert.match(
+        result.stdout,
+        /did not finish/,
+        `stdout was trusted (${writer}): ${result.stdout}`,
       );
-      assert.ok(result.wallMs < 8_000, `the process lingered ${result.wallMs} ms`);
+      assert.doesNotMatch(result.stdout, /printed, not answered|"allow"/, `leaked (${writer})`);
+      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1, result.stdout);
+      assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
+      assert.match(
+        result.stderr,
+        /printed, not answered|"allow"/,
+        "the printed line went to stderr",
+      );
+      assert.ok(result.wallMs >= 1_400 && result.wallMs < 8_000, `${result.wallMs} ms`);
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
+  }
+});
+
+test("an invalid payload on the answer channel is a deny, never a permit", async () => {
+  // A bundle bug (or a swapped bundle) that answers with something other than one deny object
+  // must not end as exit 0 with garbage or nothing on stdout, which the host reads as a permit.
+  const payloads = [
+    "not json",
+    JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse" } }),
+    JSON.stringify({ hookSpecificOutput: { permissionDecision: 42 } }),
+    "42",
+  ];
+  for (const payload of payloads) {
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(
+        join(d, "pre-tool-use-main.cjs"),
+        `${ANSWER}(${JSON.stringify(payload)}); setInterval(() => {}, 1000);\n`,
+      );
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        { ATBASH_HOOK_DEADLINE_MS: "1500" },
+        dir,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        DENY_SHAPE,
+        `payload ${payload}: ${JSON.stringify(result.stdout)}`,
+      );
+      assert.match(result.stdout, /invalid decision/, result.stdout);
+      assert.doesNotThrow(() => JSON.parse(result.stdout));
+      assert.ok(
+        result.wallMs < 1_400,
+        `the invalid answer was not refused at once: ${result.wallMs} ms`,
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
+test("a permit answered through the channel is silence, and a second answer is ignored", async () => {
+  // The real bundle answers "" for a permit. That must reach the host as an empty stdout with exit 0,
+  // and a later attempt to answer again (a stray second call) must change nothing.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(""); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "second answer" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "1500" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "", `expected a permit, got ${JSON.stringify(result.stdout)}`);
+    assert.ok(result.wallMs < 1_400, `a permit lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a judge BLOCK reaches the host as the bundle's own deny through the channel", async () => {
+  // End to end through the real bundle: the SDK's block verdict becomes the bundle's serializeDeny,
+  // handed to the shim over the channel and written to stdout once, with exit 0.
+  const judge = await startJudge({ delayMs: 0, verdict: "BLOCK" });
+  try {
+    const result = await runHook(ENTRY, {
+      ATBASH_ENDPOINT: judge.endpoint,
+      ATBASH_AGENT_KEY: generateKeypair().priv_key,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /denied by the test judge/, result.stdout);
+    assert.doesNotMatch(result.stdout, /did not finish|invalid decision/, result.stdout);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.doesNotThrow(() => JSON.parse(result.stdout));
+    assert.ok(result.wallMs < 8_000, `a deny took ${result.wallMs} ms`);
+  } finally {
+    await judge.close();
   }
 });
 

@@ -113,6 +113,30 @@ export function sanitizeReason(reason: string, fallback: string): string {
   return safeReason.slice(0, 800);
 }
 
+/**
+ * The private channel between the bundled hook and the shipped shim (src/hook/shim.cjs). The shim
+ * installs a function under this well-known symbol before it loads the bundle; the bundle hands its
+ * decision to that function instead of writing it to stdout. stdout is then never a decision
+ * channel: whatever a library prints there is diverted to stderr by the shim, so no log line can be
+ * mistaken for the hook's answer. The symbol is registered (Symbol.for), so the bundle and the shim
+ * agree on it without sharing code.
+ */
+export const HOOK_ANSWER_CHANNEL: unique symbol = Symbol.for("atbash.hook.answer");
+
+export type HookAnswer = (output: string) => void;
+
+/** Hand the decision to the shim when it is present; write it to stdout when running bare. */
+export function deliverDecision(output: string): void {
+  const answer = (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[HOOK_ANSWER_CHANNEL];
+  if (typeof answer === "function") {
+    (answer as HookAnswer)(output);
+    return;
+  }
+  if (output !== "") {
+    process.stdout.write(`${output}\n`);
+  }
+}
+
 export function serializeDeny(reason: string): string {
   const output: PreToolUseDenyOutput = {
     hookSpecificOutput: {
