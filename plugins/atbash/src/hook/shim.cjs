@@ -23,11 +23,16 @@
 // can find it and call it; that code could equally patch process.exit or write to fd 1, so it is
 // no new trust boundary - the channel only ever accepts a deny, never an allow, and a stray permit
 // neither disarms the deadline nor outranks a later deny. A channel that some other code installed
-// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a deny, whatever it
-// looks like: the shim owns the channel or it decides nothing else. The shim's own stdout write is
-// synchronous on Windows pipes, so a host that never reads a deny larger than the pipe can hold
-// would block the shim there; the reason cap below keeps every deny under the size measured to
-// block (about 128 KiB), and past that only the host timeout ends the process.
+// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a blocking exit
+// (2, reason on stderr; exit code 2 is also set ahead of time, so a process.exit patched away
+// in-process still ends blocking), whatever it looks like: the shim owns the channel or it decides
+// nothing else. In-process code that makes process.exit THROW ends the hook at node's exit 1
+// (non-blocking for the host) whatever the shim does - it is the same in-process control as
+// patching fs, and out of scope. The shim's own stdout write is synchronous on Windows pipes, so a
+// host that never reads a deny larger than the pipe can hold would block the shim there; the deny
+// is therefore bounded in serialized BYTES (below), under the size measured to block (about 128
+// KiB of bytes; escaped quotes and multi-byte characters count as what JSON makes of them), and
+// past that only the host timeout ends the process.
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -38,13 +43,15 @@ const MAX_DEADLINE_MS = 30000;
 // A queued decision waits for the host to read it until this long past the deadline, then the shim
 // gives up with a blocking exit. 30 s + 2 s stays under the host's 35 s timeout.
 const DRAIN_GRACE_MS = 2000;
-// The longest reason forwarded to the host. A judge verdict is a few hundred characters (the
-// bundle's own cap is 800); this bounds what a swapped or damaged bundle can queue and so bounds
-// the drain the grace period above must cover. Above the Linux pipe buffer (64 KiB), so a queued
-// deny can still be seen to drain or not drain there; under the size at which a Windows
-// synchronous pipe write to a host that never reads blocks the process (120,000 characters passed,
-// 160,000 blocked, node 22).
-const MAX_REASON_CHARS = 81920;
+// The largest deny written to the host, in serialized bytes. A judge verdict is a few hundred
+// characters (the bundle's own cap is 800); this bounds what a swapped or damaged bundle can queue
+// and so bounds the drain the grace period above must cover. Above the Linux pipe buffer (64 KiB),
+// so a queued deny can still be seen to drain or not drain there; under the size at which a
+// Windows synchronous pipe write to a host that never reads blocks the process for good (130,000
+// bytes passed, 140,000 blocked, node 22). Bytes, not characters: JSON escaping doubles a quote or
+// a newline and a non-ASCII character is up to three bytes, so a character cap was no bound.
+const MAX_DENY_BYTES = 98304;
+const TRUNCATION_MARK = " [reason truncated by the hook]";
 const CHANNEL = Symbol.for("atbash.hook.answer");
 
 function resolveDeadlineMs(raw) {
@@ -65,11 +72,15 @@ const deadlineMs = resolveDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS);
 // transcript) - postchain-client's warning() and error() both fire at its default level (LOG_LEVEL
 // unset) and a stray line on stdout would corrupt the host's parse. Nothing printed on stdout is
 // ever taken for the decision, however well shaped; that residual of a shape check on stdout is
-// closed by the channel. The channel accepts exactly one thing: a PreToolUse deny, the object
-// serializeDeny emits (tests pin the coupling). It never accepts an allow: the bundle's allow is
-// silence, which leaves the host's own permission rules and every other hook in force, and the
-// channel must not be a more powerful primitive than that. Anything else on the channel is an
-// invalid decision and is denied - including a deny whose reason is not a string.
+// closed by the channel. The channel accepts exactly one decision: a PreToolUse deny, the object
+// serializeDeny emits (tests pin the coupling), and one non-decision: the empty string, the
+// bundle's permit. A permit writes nothing (the host's own permission rules and every other hook
+// stay in force) and - unlike plain silence, which the exit backstop turns into a deny - it lets
+// the process end without a decision; it is not final (a later deny overrides it, the deadline
+// still applies). So the channel is a permit primitive for whatever runs in this process, which
+// is inside the boundary stated at the top: such code could equally end the process however it
+// likes. Anything else on the channel is an invalid decision and is denied - including a deny
+// whose reason is not a string.
 function isDecision(text) {
   const trimmed = text.trim();
   if (!trimmed.startsWith("{")) return false;
@@ -228,20 +239,33 @@ function deny(reason) {
   }
 }
 
-function denyJson(reason) {
-  const text =
-    reason.length > MAX_REASON_CHARS
-      ? reason.slice(0, MAX_REASON_CHARS) + " [reason truncated by the hook]"
-      : reason;
+function serializeDenyLine(reason) {
   return (
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: text,
+        permissionDecisionReason: reason,
       },
     }) + "\n"
   );
+}
+
+function denyJson(reason) {
+  let text = serializeDenyLine(reason);
+  let bytes = Buffer.byteLength(text, "utf8");
+  if (bytes <= MAX_DENY_BYTES) return text;
+  // Cut the reason in proportion to the overshoot (the serialized size grows monotonically with
+  // the reason), keep a margin for the mark and for escaping, and re-measure; a few rounds settle
+  // it, and the last resort is no reason at all.
+  let kept = reason;
+  for (let round = 0; round < 8 && bytes > MAX_DENY_BYTES; round += 1) {
+    const budget = Math.floor((kept.length * MAX_DENY_BYTES) / bytes) - TRUNCATION_MARK.length - 64;
+    kept = budget > 0 ? kept.slice(0, budget) : "";
+    text = serializeDenyLine(kept + TRUNCATION_MARK);
+    bytes = Buffer.byteLength(text, "utf8");
+  }
+  return bytes <= MAX_DENY_BYTES ? text : serializeDenyLine(TRUNCATION_MARK.trim());
 }
 
 // The exit-time backstop, registered before anything below can go wrong. Every fail-closed
@@ -295,6 +319,11 @@ process.on("exit", () => {
 try {
   if (globalThis[CHANNEL] !== undefined) {
     refused = true;
+    // The exit code is set before the blocking exit is even attempted: this load's own backstop
+    // stays silent (refused), so with process.exit patched away nothing else would set it and the
+    // loop would drain to a permit-shaped 0. The channel owner's backstop, registered earlier,
+    // still resets it to 0 after writing the one deny on a genuine second load.
+    process.exitCode = 2;
     exitBlocking("Atbash ERROR: the hook's decision channel was already taken.");
   } else {
     Object.defineProperty(globalThis, CHANNEL, {
