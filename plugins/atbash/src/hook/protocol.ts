@@ -125,9 +125,22 @@ export const HOOK_ANSWER_CHANNEL: unique symbol = Symbol.for("atbash.hook.answer
 
 export type HookAnswer = (output: string) => void;
 
+/**
+ * The channel as it was at load time. The shim installs it before the bundle loads, so under the
+ * shim it is always here; capturing it once means nothing that happens later in the process (a
+ * reassigned `globalThis`, another realm) can steer a decision into the bare-run fallback below,
+ * which under the shim would be a diverted log line rather than a decision.
+ */
+const channelAtLoad: unknown = (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[
+  HOOK_ANSWER_CHANNEL
+];
+
 /** Hand the decision to the shim when it is present; write it to stdout when running bare. */
 export function deliverDecision(output: string): void {
-  const answer = (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[HOOK_ANSWER_CHANNEL];
+  const answer =
+    typeof channelAtLoad === "function"
+      ? channelAtLoad
+      : (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[HOOK_ANSWER_CHANNEL];
   if (typeof answer === "function") {
     (answer as HookAnswer)(output);
     return;

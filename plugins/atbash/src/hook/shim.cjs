@@ -15,7 +15,14 @@
 // stdout. What this cannot close: a synchronous hang inside the bundle or the native addon keeps
 // the event loop from ever running the deadline timer; only the host timeout ends that. A write
 // straight to file descriptor 1 (not through process.stdout) is not intercepted either: the JS
-// bundle has none, and the native SDK addon is assumed not to print to fd 1 (its panics go to fd 2).
+// bundle has none, and the native SDK addon is assumed not to print to fd 1 (its panics go to fd 2);
+// such a write can no longer be taken for the decision, but it can still corrupt the shim's deny
+// into unparseable stdout, which the host reads as a permit. The bundle's only child processes are
+// OpenTelemetry's machine-id lookups through exec with piped stdio, so a child cannot reach fd 1.
+// The answer channel is a registered symbol on globalThis, so any code running inside this process
+// can find it and call it; that code could equally patch process.exit or write to fd 1, so it is
+// no new trust boundary - the channel only ever accepts a deny, never an allow, and a stray permit
+// neither disarms the deadline nor outranks a later deny.
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -31,49 +38,72 @@ const MAX_DEADLINE_MS = 30000;
 // transcript) - postchain-client's warning() and error() both fire at its default level (LOG_LEVEL
 // unset) and a stray line on stdout would corrupt the host's parse. Nothing printed on stdout is
 // ever taken for the decision, however well shaped; that residual of a shape check on stdout is
-// closed by the channel. The channel's payload is still checked (one JSON object with a
-// hookSpecificOutput.permissionDecision string, which is what serializeDeny emits - tests pin the
-// coupling): a malformed answer is a deny, never an exit 0 with an unparseable or empty stdout.
+// closed by the channel. The channel accepts exactly one thing: a PreToolUse deny, the object
+// serializeDeny emits (tests pin the coupling). It never accepts an allow: the bundle's allow is
+// silence, which leaves the host's own permission rules and every other hook in force, and the
+// channel must not be a more powerful primitive than that. Anything else on the channel is an
+// invalid decision and is denied.
 function isDecision(text) {
   const trimmed = text.trim();
   if (!trimmed.startsWith("{")) return false;
   try {
-    const parsed = JSON.parse(trimmed);
-    return typeof parsed?.hookSpecificOutput?.permissionDecision === "string";
+    const out = JSON.parse(trimmed)?.hookSpecificOutput;
+    return (
+      typeof out === "object" &&
+      out !== null &&
+      out.hookEventName === "PreToolUse" &&
+      out.permissionDecision === "deny"
+    );
   } catch {
     return false;
   }
 }
-let answered = false;
+// decided: a deny is on its way to the host (from the bundle, the deadline, a crash, or the exit
+// backstop) - final, later answers are ignored. permitted: the bundle answered "" (allow). A permit
+// is not final: it does not disarm the deadline (a permit followed by a lingering handle is still
+// denied at the deadline, as before the channel existed), and a later deny overrides it - a stray
+// "" from anywhere in-process must never swallow the real decision.
+let decided = false;
+let permitted = false;
 
-// The bundle's side of the channel. The first call decides; later calls are ignored (the decision
-// already stands, and a second JSON on stdout would be unparseable, which the host reads as a
-// non-blocking message). A permit ("") is recorded so a lingering handle does not turn an allowed
-// call into a deadline deny; nothing is written for it.
+// The bundle's side of the channel.
 function answer(output) {
-  if (answered) return;
+  if (decided) return;
   if (typeof output !== "string") {
     deny("Atbash ERROR: the hook produced an invalid decision.");
     return;
   }
   if (output === "") {
-    answered = true;
+    permitted = true;
     return;
   }
   if (!isDecision(output)) {
     deny("Atbash ERROR: the hook produced an invalid decision.");
     return;
   }
-  answered = true;
-  stdoutWrite(output.endsWith("\n") ? output : output + "\n");
+  decided = true;
+  // The bundle's deny goes out through the stream: on POSIX a pipe stdout is asynchronous, so a
+  // large reason can still drain when the host reads late. The callback ends the process; a write
+  // error is a blocking exit, never a permit-shaped 0 with the deny lost; a synchronous throw
+  // (a library ended or destroyed the stream) is the same blocking exit.
+  const text = output.endsWith("\n") ? output : output + "\n";
+  try {
+    stdoutWrite(text, (error) => {
+      if (error) exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+      else process.exit(0);
+    });
+  } catch {
+    exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+  }
 }
 // Set when the stdout pipe reports an error after the bundle's decision was queued (the host went
-// away): the decision was lost, and the answered branch below must not end with a permit-shaped 0.
+// away): the decision was lost, and the decided branch below must not end with a permit-shaped 0.
 let stdoutBroken = false;
 let stdoutWrite = null;
 
 function exitBlocking(reason) {
   // Nothing can reach stdout: exit 2 is a blocking error for the host, never an empty permit.
+  decided = true;
   try {
     fs.writeSync(2, reason + "\n");
   } catch {
@@ -83,47 +113,86 @@ function exitBlocking(reason) {
 }
 
 function writeDecisionSync(output) {
-  // On POSIX the pipe behind fd 1 is non-blocking once process.stdout exists; a momentarily full
-  // pipe answers EAGAIN, which is retried briefly rather than treated as a dead host.
-  for (let attempt = 0; ; attempt += 1) {
+  // Every byte, or an error: a pipe write can be partial, and on POSIX the pipe behind fd 1 is
+  // non-blocking once process.stdout exists, so a momentarily full pipe answers EAGAIN - retried
+  // briefly rather than treated as a dead host.
+  const buffer = Buffer.from(output, "utf8");
+  let offset = 0;
+  let attempt = 0;
+  while (offset < buffer.length) {
     try {
-      fs.writeSync(1, output);
-      return;
+      offset += fs.writeSync(1, buffer, offset, buffer.length - offset);
+      attempt = 0;
     } catch (error) {
       if (!(error && error.code === "EAGAIN") || attempt >= 40) throw error;
+      attempt += 1;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
 }
 
 function deny(reason) {
-  if (answered) {
-    // The bundle already wrote its decision but is still alive (a lingering handle): its decision
-    // stands. On POSIX a pipe stdout is asynchronous, so the bytes may still be queued; an empty
-    // write's callback fires once everything before it has drained, and only then does the process
-    // end. If the pipe broke or never drains, exit 2 (a blocking error) rather than a permit-shaped
-    // 0 or a wait for the host timeout.
+  if (decided) {
+    // A decision is already on its way but the process is still alive (a lingering handle): that
+    // decision stands. On POSIX a pipe stdout is asynchronous, so the bytes may still be queued; an
+    // empty write's callback fires once everything before it has drained, and only then does the
+    // process end. If the pipe broke or never drains, exit 2 (a blocking error) rather than a
+    // permit-shaped 0 or a wait for the host timeout.
     if (stdoutBroken) exitBlocking(reason);
     setTimeout(() => process.exit(2), 2000).unref();
     stdoutWrite("", (error) => process.exit(error ? 2 : 0));
     return;
   }
-  answered = true;
-  const output =
+  decided = true;
+  try {
+    writeDecisionSync(denyJson(reason));
+    process.exit(0);
+  } catch {
+    exitBlocking(reason);
+  }
+}
+
+function denyJson(reason) {
+  return (
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason: reason,
       },
-    }) + "\n";
-  try {
-    writeDecisionSync(output);
-    process.exit(0);
-  } catch {
-    exitBlocking(reason);
-  }
+    }) + "\n"
+  );
 }
+
+// The exit-time backstop. Every fail-closed trigger above needs an event: a throw, a rejection, a
+// load failure, or the deadline timer - and the timer is unref'd so a hook that answered can end.
+// A bundle that simply RETURNS without answering (an early return, a swallowed error, a truncated
+// or swapped bundle whose top-level call is gone, a library calling process.exit(0)) fires none of
+// them: the loop drains, node exits 0 with an empty stdout, and the host reads a permit. So the
+// last word is here: at exit, no decision and no permit is a deny written synchronously with exit
+// 0; a decision whose stdout write broke (the host went away) is a blocking exit code rather than
+// a permit-shaped 0; a permit stays silence. What this cannot cover: process.abort or a signal
+// from the native addon ends the process without running exit listeners (a non-0/2 exit, which the
+// host treats as non-blocking).
+process.on("exit", () => {
+  if (decided) {
+    if (stdoutBroken) process.exitCode = 2;
+    return;
+  }
+  if (permitted) return;
+  decided = true;
+  try {
+    writeDecisionSync(denyJson("Atbash ERROR: the hook ended without a decision."));
+    process.exitCode = 0;
+  } catch {
+    try {
+      fs.writeSync(2, "Atbash ERROR: the hook ended without a decision.\n");
+    } catch {
+      // nothing left to report to
+    }
+    process.exitCode = 2;
+  }
+});
 
 // Installing the stdout guard touches process.stdout, which can itself throw when fd 1 is closed at
 // spawn (EBADF); that must end as a blocking error, not as node's default exit 1 with no output.
@@ -138,14 +207,24 @@ try {
   process.stdout.write = function (chunk, encoding, callback) {
     return process.stderr.write(chunk, encoding, callback);
   };
-  Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), {
-    value: answer,
-    writable: false,
-    configurable: false,
-    enumerable: false,
-  });
 } catch {
   exitBlocking("Atbash ERROR: the hook could not attach to the host's output.");
+}
+// The channel is installed once. A second load of the shim in the same process (two paths to the
+// same file are two require-cache entries) finds the first one and keeps it rather than dying on
+// "cannot redefine property".
+try {
+  const existing = globalThis[Symbol.for("atbash.hook.answer")];
+  if (typeof existing !== "function") {
+    Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), {
+      value: answer,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
+  }
+} catch {
+  exitBlocking("Atbash ERROR: the hook could not install its decision channel.");
 }
 
 function resolveDeadlineMs(raw) {

@@ -475,9 +475,11 @@ test("the shim accepts exactly what serializeDeny emits, over the answer channel
   assert.equal(parsed.hookSpecificOutput.permissionDecision, "deny");
   const shim = readFileSync("src/hook/shim.cjs", "utf8");
   assert.match(shim, /Symbol\.for\("atbash\.hook\.answer"\)/);
-  assert.match(shim, /hookSpecificOutput\?\.permissionDecision/);
-  // The built bundle answers through the channel, not stdout.
+  assert.match(shim, /permissionDecision === "deny"/);
+  assert.match(shim, /hookEventName === "PreToolUse"/);
+  // The built bundle answers through the channel, not stdout - and so does the shipped one.
   assert.match(readFileSync("dist/pre-tool-use-main.cjs", "utf8"), /atbash\.hook\.answer/);
+  assert.match(readFileSync("runtime/pre-tool-use-main.cjs", "utf8"), /atbash\.hook\.answer/);
   // Drive the built shim with a bundle that answers exactly serializeDeny's output and lingers.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
@@ -548,17 +550,33 @@ test("a decision written to stdout instead of the answer channel is diverted, no
 test("an invalid payload on the answer channel is a deny, never a permit", async () => {
   // A bundle bug (or a swapped bundle) that answers with something other than one deny object
   // must not end as exit 0 with garbage or nothing on stdout, which the host reads as a permit.
+  // Each entry is the JavaScript expression the fixture passes to the channel: strings that are
+  // not a decision, and non-strings (a number, an object shaped like a decision but not serialized).
   const payloads = [
-    "not json",
-    JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse" } }),
-    JSON.stringify({ hookSpecificOutput: { permissionDecision: 42 } }),
+    JSON.stringify("not json"),
+    JSON.stringify(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse" } })),
+    JSON.stringify(JSON.stringify({ hookSpecificOutput: { permissionDecision: 42 } })),
+    JSON.stringify("42"),
     "42",
+    '{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } }',
+    // An allow is never a channel payload: the bundle's allow is silence, which leaves the host's
+    // own rules and other hooks in force; an explicit allow would be a stronger primitive.
+    JSON.stringify(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+      }),
+    ),
+    JSON.stringify(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: "PostToolUse", permissionDecision: "deny" },
+      }),
+    ),
   ];
   for (const payload of payloads) {
     const dir = withDamagedRuntime((d) => {
       writeFileSync(
         join(d, "pre-tool-use-main.cjs"),
-        `${ANSWER}(${JSON.stringify(payload)}); setInterval(() => {}, 1000);\n`,
+        `${ANSWER}(${payload}); setInterval(() => {}, 1000);\n`,
       );
     });
     try {
@@ -585,13 +603,59 @@ test("an invalid payload on the answer channel is a deny, never a permit", async
   }
 });
 
-test("a permit answered through the channel is silence, and a second answer is ignored", async () => {
-  // The real bundle answers "" for a permit. That must reach the host as an empty stdout with exit 0,
-  // and a later attempt to answer again (a stray second call) must change nothing.
+test("a permit answered through the channel is silence, and a deny after a stray permit wins", async () => {
+  // The real bundle answers "" for a permit: an empty stdout with exit 0, promptly. A permit is not
+  // final - a stray "" from anywhere in-process must never swallow the real decision, so a deny that
+  // follows it is what the host receives.
+  const lone = withDamagedRuntime((d) => {
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), `${ANSWER}("");\n`);
+  });
+  try {
+    // A 6 s deadline: a prompt exit ends well under it even on a loaded machine (a 1.4 s bound
+    // failed in a cold export while three other suites ran); lingering to the deadline does not.
+    const result = await runHook(
+      join(lone, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      lone,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "", `expected a permit, got ${JSON.stringify(result.stdout)}`);
+    assert.ok(result.wallMs < 5_000, `a permit lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(lone, { force: true, recursive: true });
+  }
+  const overridden = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(""); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "deny after a stray permit" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(overridden, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      overridden,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      /deny after a stray permit/,
+      `the deny was swallowed: ${JSON.stringify(result.stdout)}`,
+    );
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.ok(result.wallMs < 5_000, `lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(overridden, { force: true, recursive: true });
+  }
+});
+
+test("a permit followed by a lingering handle is still denied at the deadline", async () => {
+  // Before the channel, a permit was silence and a hook still alive at the deadline was denied.
+  // Recording the permit must not disarm that: the deadline deny is the fail-safe direction.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `${ANSWER}(""); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "second answer" } }));\n`,
+      `${ANSWER}(""); setInterval(() => {}, 1000);\n`,
     );
   });
   try {
@@ -601,10 +665,85 @@ test("a permit answered through the channel is silence, and a second answer is i
       dir,
     );
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, "", `expected a permit, got ${JSON.stringify(result.stdout)}`);
-    assert.ok(result.wallMs < 1_400, `a permit lingered ${result.wallMs} ms`);
+    assert.match(
+      result.stdout,
+      /did not finish/,
+      `expected the deadline deny, got ${JSON.stringify(result.stdout)}`,
+    );
+    assert.doesNotThrow(() => JSON.parse(result.stdout));
   } finally {
     rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a bundle deny after a library destroyed the stdout stream never ends as a permit", async () => {
+  // process.stdout.write is intercepted, but end()/destroy() are not. Two correct outcomes exist,
+  // by platform: where the destroyed stream still reaches the pipe (Windows stdio pipes are
+  // synchronous), the deny is delivered and the exit is 0; where the write errors, the shim must
+  // end with exit 2 and the reason on stderr. What must never happen is the third shape: the loop
+  // draining into exit 0 with an empty stdout, which the host reads as a permit.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `process.stdout.destroy(); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "lost deny" } }));
+`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
+    );
+    const delivered = result.code === 0 && /lost deny/.test(result.stdout);
+    const blocking = result.code === 2 && /could not be delivered/.test(result.stderr);
+    assert.ok(
+      delivered || blocking,
+      `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}, stderr ${JSON.stringify(result.stderr)}`,
+    );
+    if (delivered) assert.doesNotThrow(() => JSON.parse(result.stdout));
+    assert.ok(result.wallMs < 5_000, `waited ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a bundle that returns without answering is denied at exit, never a permit", async () => {
+  // None of the fail-closed triggers fire for a bundle that loads and simply returns: no throw, no
+  // rejection, no load error, and the unref'd deadline timer lets the loop drain. Before the exit
+  // backstop that was exit 0 with an empty stdout - a permit. Three shapes: a bundle that does
+  // nothing, one that swallows its own async error, one whose top-level call is a no-op promise.
+  const bundles = [
+    "module.exports = 1;\n",
+    'Promise.reject(new Error("swallowed")).catch(() => {});\n',
+    "(async () => {})();\n",
+  ];
+  for (const bundle of bundles) {
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(join(d, "pre-tool-use-main.cjs"), bundle);
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        { ATBASH_HOOK_DEADLINE_MS: "6000" },
+        dir,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        DENY_SHAPE,
+        `bundle ${JSON.stringify(bundle)} ended as a permit: ${JSON.stringify(result.stdout)}`,
+      );
+      assert.match(result.stdout, /ended without a decision/, result.stdout);
+      assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
+      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+      assert.ok(
+        result.wallMs < 5_000,
+        `the deny waited for the deadline instead of the exit: ${result.wallMs} ms`,
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
   }
 });
 
