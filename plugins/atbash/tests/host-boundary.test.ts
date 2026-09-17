@@ -590,7 +590,7 @@ test("an invalid payload on the answer channel is a deny, never a permit", async
     try {
       const result = await runHook(
         join(dir, "pre-tool-use.cjs"),
-        { ATBASH_HOOK_DEADLINE_MS: "1500" },
+        { ATBASH_HOOK_DEADLINE_MS: "6000" },
         dir,
       );
       assert.equal(result.code, 0, result.stderr);
@@ -602,7 +602,10 @@ test("an invalid payload on the answer channel is a deny, never a permit", async
       assert.match(result.stdout, /invalid decision/, result.stdout);
       assert.doesNotThrow(() => JSON.parse(result.stdout));
       assert.ok(
-        result.wallMs < 1_400,
+        // A 6 s deadline: an immediate refusal ends well under it even on a loaded machine (a 1.4 s
+        // bound failed at 1412 ms while three suites shared the machine); waiting for the deadline
+        // does not.
+        result.wallMs < 5_000,
         `the invalid answer was not refused at once: ${result.wallMs} ms`,
       );
     } finally {
