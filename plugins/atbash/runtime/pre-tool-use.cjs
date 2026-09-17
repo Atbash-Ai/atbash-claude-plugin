@@ -23,16 +23,19 @@
 // can find it and call it; that code could equally patch process.exit or write to fd 1, so it is
 // no new trust boundary - the channel only ever accepts a deny, never an allow, and a stray permit
 // neither disarms the deadline nor outranks a later deny. A channel that some other code installed
-// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a blocking exit
-// (2, reason on stderr; exit code 2 is also set ahead of time, so a process.exit patched away
-// in-process still ends blocking), whatever it looks like: the shim owns the channel or it decides
-// nothing else. In-process code that makes process.exit THROW ends the hook at node's exit 1
+// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a deny on stdout
+// and exit 0 (already on stdout when the loop drains, should process.exit have been patched away
+// in-process), whatever it looks like: the shim owns the channel or it decides nothing else. Exit
+// 2 is the answer only when stdout cannot be written at all - blocking for Claude Code, a permit
+// on Codex 0.154.0 (measured: that host blocks on a deny with exit 0 and on nothing else), which
+// no hook can help. In-process code that makes process.exit THROW ends the hook at node's exit 1
 // (non-blocking for the host) whatever the shim does - it is the same in-process control as
-// patching fs, and out of scope. The shim's own stdout write is synchronous on Windows pipes, so a
-// host that never reads a deny larger than the pipe can hold would block the shim there; the deny
-// is therefore bounded in serialized BYTES (below), under the size measured to block (about 128
-// KiB of bytes; escaped quotes and multi-byte characters count as what JSON makes of them), and
-// past that only the host timeout ends the process.
+// patching fs, and out of scope. A pipe write to a host that never reads blocks on Windows for any
+// deny larger than the pipe's buffer, and nothing in-process can interrupt it (a blocked event
+// loop runs no watchdog; a blocked pool thread is joined by process.exit) - so the deny is bounded
+// in serialized BYTES (below) under the smallest buffer a host hands a hook, and the write always
+// completes. The write goes to file descriptor 1 off the event loop, and a watchdog bounds the
+// wait for a host that reads late, as defence in depth behind that bound.
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -43,14 +46,16 @@ const MAX_DEADLINE_MS = 30000;
 // A queued decision waits for the host to read it until this long past the deadline, then the shim
 // gives up with a blocking exit. 30 s + 2 s stays under the host's 35 s timeout.
 const DRAIN_GRACE_MS = 2000;
-// The largest deny written to the host, in serialized bytes. A judge verdict is a few hundred
-// characters (the bundle's own cap is 800); this bounds what a swapped or damaged bundle can queue
-// and so bounds the drain the grace period above must cover. Above the Linux pipe buffer (64 KiB),
-// so a queued deny can still be seen to drain or not drain there; under the size at which a
-// Windows synchronous pipe write to a host that never reads blocks the process for good (130,000
-// bytes passed, 140,000 blocked, node 22). Bytes, not characters: JSON escaping doubles a quote or
-// a newline and a non-ASCII character is up to three bytes, so a character cap was no bound.
-const MAX_DENY_BYTES = 98304;
+// The largest deny written to the host, in serialized bytes: under the smallest pipe buffer a
+// host is known to hand a hook (4 KiB for a bare CreatePipe; libuv pipes have 64 KiB), so the
+// write always completes into the pipe whether or not the host has read yet, and no host can hold
+// it. That is the only bound that works on Windows: a pipe write there blocks the thread that
+// makes it - the event loop through process.stdout, or a pool thread through fs.write that
+// process.exit then joins at shutdown - so no watchdog can interrupt a blocked write (measured on
+// both paths). A judge verdict is a few hundred characters (the bundle's own cap is 800), so the
+// bound only ever cuts a swapped or damaged bundle's reason. Bytes, not characters: JSON escaping
+// doubles a quote or a newline and a non-ASCII character is up to three bytes.
+const MAX_DENY_BYTES = 3584;
 const TRUNCATION_MARK = " [reason truncated by the hook]";
 const CHANNEL = Symbol.for("atbash.hook.answer");
 
@@ -106,9 +111,27 @@ let decided = false;
 let permitted = false;
 // Set once a queued decision has fully left the process (the write callback ran without error).
 let delivered = false;
-// Set when this load found the channel taken and ended the process with a blocking exit: the
-// exit backstop below then belongs to whoever owns the channel, and this load's must stay silent.
+// Set when this load found the channel taken and refused the call: the exit backstop below then
+// belongs to whoever owns the channel, and this load's must stay silent.
 let refused = false;
+// Set once the bundle's deny has been handed to the thread pool: from then on no other stdout
+// write may be attempted (a synchronous write behind a blocked one would block the loop too).
+let queued = false;
+// Process-wide "a decision is on stdout" marker, shared by every load of this shim in the process:
+// a second load that refused the call and wrote the deny must not be followed by the first load's
+// backstop deny - two decisions on stdout are unparseable, and on Codex unparseable is a permit.
+// In-process code can forge it, which is the same in-process control as everything else here.
+const DECIDED_MARK = Symbol.for("atbash.hook.decided");
+function decisionOnStdout() {
+  return globalThis[DECIDED_MARK] === true;
+}
+function markDecisionOnStdout() {
+  try {
+    Object.defineProperty(globalThis, DECIDED_MARK, { value: true, configurable: false });
+  } catch {
+    // already marked by another load
+  }
+}
 
 // The bundle's side of the channel.
 function answer(output) {
@@ -126,32 +149,64 @@ function answer(output) {
     return;
   }
   decided = true;
-  // The bundle's deny goes out through the stream: on POSIX a pipe stdout is asynchronous, so a
-  // large reason can still drain when the host reads late. The callback ends the process; a write
-  // error is a blocking exit, never a permit-shaped 0 with the deny lost; a synchronous throw
-  // (a library ended or destroyed the stream) is the same blocking exit; a host that never reads
-  // (no callback) is ended by an exit-2 watchdog at the same moment the deadline's decided branch
-  // would end the process: DRAIN_GRACE_MS past the deadline, never sooner than the grace itself.
-  // The bytes written are the shim's own canonical serialization of the bundle's reason - no
-  // sibling key the bundle did not have to prove (an approve-shaped legacy field, say) reaches
-  // the host.
+  // The bundle's deny goes out as an asynchronous write to file descriptor 1 on the libuv thread
+  // pool - never through process.stdout, whose pipe write is synchronous on Windows: a host that
+  // does not read blocks that write for every deny larger than the pipe's buffer (64 KiB on a
+  // libuv pipe, as little as 4 KiB on a bare CreatePipe), and a blocked event loop can run no
+  // watchdog. A blocked pool thread leaves the loop free, so the exit-2 watchdog still ends the
+  // process DRAIN_GRACE_MS past the deadline (the same moment the deadline's decided branch would),
+  // and a host that reads late still gets every byte. A write error (the host went away) is a
+  // blocking exit, never a permit-shaped 0 with the deny lost. The bytes written are the shim's
+  // own canonical serialization of the bundle's reason - no sibling key the bundle did not have to
+  // prove (an approve-shaped legacy field, say) reaches the host.
   const text = denyJson(JSON.parse(output.trim()).hookSpecificOutput.permissionDecisionReason);
   setTimeout(
     () => exitBlocking("Atbash ERROR: the host did not read the decision in time."),
     drainBudgetMs(),
   ).unref();
-  try {
-    stdoutWrite(text, (error) => {
-      if (error) {
-        exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
-        return;
-      }
-      delivered = true;
-      process.exit(0);
-    });
-  } catch {
-    exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
-  }
+  queued = true;
+  markDecisionOnStdout();
+  writeDecisionAsync(text, (error) => {
+    if (error) {
+      exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+      return;
+    }
+    delivered = true;
+    process.exit(0);
+  });
+}
+
+function writeDecisionAsync(text, callback) {
+  // Every byte, off the event loop. On POSIX the pipe behind fd 1 is non-blocking once
+  // process.stdout exists, so a full pipe answers EAGAIN: retried on a (referenced) timer, which
+  // keeps the loop alive until the host reads or the watchdog decides.
+  const buffer = Buffer.from(text, "utf8");
+  let offset = 0;
+  const step = () => {
+    let request;
+    try {
+      request = fs.write(1, buffer, offset, buffer.length - offset, null, (error, written) => {
+        if (error) {
+          if (error.code === "EAGAIN") {
+            setTimeout(step, 25);
+            return;
+          }
+          callback(error);
+          return;
+        }
+        offset += written;
+        if (offset < buffer.length) {
+          step();
+          return;
+        }
+        callback(null);
+      });
+    } catch (error) {
+      callback(error);
+    }
+    return request;
+  };
+  step();
 }
 
 function drainBudgetMs() {
@@ -166,18 +221,41 @@ function drainBudgetMs() {
 // Set when the stdout pipe reports an error after the bundle's decision was queued (the host went
 // away): the decision was lost, and the decided branch below must not end with a permit-shaped 0.
 let stdoutBroken = false;
-let stdoutWrite = null;
 
 function exitBlocking(reason) {
-  // Nothing can reach stdout: exit 2 is a blocking error for the host, never an empty permit.
-  // `delivered` stays false: should process.exit itself have been patched away in-process, the
-  // exit backstop still turns this into exit code 2 rather than a permit-shaped 0.
+  // Fail closed the way both hosts honour: a deny on stdout with exit 0. Claude Code also blocks
+  // on exit 2, but Codex 0.154.0 does not (measured: exit 2 with a reason on stderr, and even exit
+  // 2 with a deny on stdout, let the tool call run; only a deny on stdout with exit 0 blocked it).
+  // So the deny goes to stdout synchronously whenever stdout can still take one: not when a
+  // decision is already queued on the thread pool (a synchronous write behind a blocked one would
+  // block the loop as well, and the host that is not reading gets nothing either way), and not
+  // when another load already put a decision there. Only when stdout cannot be written at all is
+  // the answer exit 2 with the reason on stderr - blocking for Claude Code, a documented residual
+  // for Codex, where a hook whose stdout is gone cannot block anything.
   decided = true;
+  if (!queued && !decisionOnStdout()) {
+    try {
+      writeDecisionSync(denyJson(reason));
+      delivered = true;
+      markDecisionOnStdout();
+      try {
+        fs.writeSync(2, reason + "\n");
+      } catch {
+        // stderr is optional here
+      }
+      process.exitCode = 0;
+      process.exit(0);
+      return;
+    } catch {
+      // stdout is not writable: fall through to the blocking code
+    }
+  }
   try {
     fs.writeSync(2, reason + "\n");
   } catch {
     // nothing left to report to
   }
+  process.exitCode = 2;
   process.exit(2);
 }
 
@@ -203,36 +281,26 @@ function writeDecisionSync(output) {
 function deny(reason) {
   if (decided) {
     // A decision is already on its way but the process is still alive (a lingering handle): that
-    // decision stands. On POSIX a pipe stdout is asynchronous, so the bytes may still be queued; an
-    // empty write's callback fires once everything before it has drained, and only then does the
-    // process end. If the pipe broke or never drains, exit 2 (a blocking error) rather than a
-    // permit-shaped 0 or a wait for the host timeout.
+    // decision stands, and its write is still in flight on the thread pool. If the pipe broke or
+    // never drains, exit 2 (a blocking error) rather than a permit-shaped 0 or a wait for the host
+    // timeout.
     if (stdoutBroken) {
       exitBlocking(reason);
       return;
     }
+    // The queued write's own callback ends the process once every byte is out; this only bounds
+    // the wait.
     setTimeout(
       () => exitBlocking("Atbash ERROR: the host did not read the decision in time."),
       drainBudgetMs(),
     ).unref();
-    try {
-      stdoutWrite("", (error) => {
-        if (error) {
-          exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
-          return;
-        }
-        delivered = true;
-        process.exit(0);
-      });
-    } catch {
-      exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
-    }
     return;
   }
   decided = true;
   try {
     writeDecisionSync(denyJson(reason));
     delivered = true;
+    markDecisionOnStdout();
     process.exit(0);
   } catch {
     exitBlocking(reason);
@@ -282,6 +350,7 @@ function denyJson(reason) {
 process.on("exit", () => {
   if (refused) return;
   if (decided) {
+    // This load's own decision: queued and never confirmed drained, or written synchronously.
     // A decision that was queued but never drained (the host went away, or in-process code called
     // process.exit while the deny was still in the pipe) must not end as a permit-shaped 0 with
     // partial or empty stdout. A blocking exit code is the honest answer.
@@ -289,10 +358,14 @@ process.on("exit", () => {
     return;
   }
   if (permitted) return;
+  // Another load of this shim already put the decision on stdout (a refused second load): one
+  // decision, not two.
+  if (decisionOnStdout()) return;
   decided = true;
   try {
     writeDecisionSync(denyJson("Atbash ERROR: the hook ended without a decision."));
     delivered = true;
+    markDecisionOnStdout();
     process.exitCode = 0;
   } catch {
     try {
@@ -310,20 +383,16 @@ process.on("exit", () => {
 // bundle's deny would go to that code, not to the host, so the call is refused here and now. No
 // brand or descriptor check can tell the shim's own second load from a decoy that copied it (both
 // are in-process code, which could equally patch process.exit), so there is no exemption: a
-// second load is a refusal, which fails closed, never a silent permit. The refusal is a blocking
-// exit (2, reason on stderr) rather than a deny on stdout: on a second load the first load's exit
-// backstop still writes its own deny, and two decisions on stdout are unparseable - a permit.
-// With the blocking exit, whichever load owns the backstop writes the one deny (exit 0), and a
-// process with no backstop at all (a foreign owner) ends with the blocking code. Nothing in the
-// plugin loads the shim twice.
+// second load is a refusal, which fails closed, never a silent permit. The refusal is a deny on
+// stdout with exit 0 - the one answer both hosts block on (Codex does not block on exit 2) - and
+// the process-wide marker keeps a genuine first load's backstop from adding a second decision.
+// Nothing in the plugin loads the shim twice.
 try {
   if (globalThis[CHANNEL] !== undefined) {
     refused = true;
-    // The exit code is set before the blocking exit is even attempted: this load's own backstop
-    // stays silent (refused), so with process.exit patched away nothing else would set it and the
-    // loop would drain to a permit-shaped 0. The channel owner's backstop, registered earlier,
-    // still resets it to 0 after writing the one deny on a genuine second load.
-    process.exitCode = 2;
+    // The refusal is a deny on stdout (exit 0): with process.exit patched away in-process the deny
+    // is already on stdout when the loop drains, and the channel owner's backstop - a genuine
+    // second load - sees the process-wide marker and adds nothing.
     exitBlocking("Atbash ERROR: the hook's decision channel was already taken.");
   } else {
     Object.defineProperty(globalThis, CHANNEL, {
@@ -343,7 +412,6 @@ try {
 // away in-process nothing after this point may run - not the guard, not the bundle.
 if (!decided) {
   try {
-    stdoutWrite = process.stdout.write.bind(process.stdout);
     process.stdout.on("error", () => {
       stdoutBroken = true;
     });
