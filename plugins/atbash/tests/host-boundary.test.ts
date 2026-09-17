@@ -156,7 +156,9 @@ test("the shipped entry point is a small un-bundled shim in front of the bundled
   // whose load failure it guards against.
   for (const entry of [ENTRY, "runtime/pre-tool-use.cjs"]) {
     const size = statSync(entry).size;
-    assert.ok(size < 16_384, `${entry} is ${size} bytes - it should be the shim, not the bundle`);
+    // The bundle is over a megabyte; the shim is a documentation-heavy 17 KB. The bound sits
+    // between the two, not at the shim's current size.
+    assert.ok(size < 32_768, `${entry} is ${size} bytes - it should be the shim, not the bundle`);
     assert.match(readFileSync(entry, "utf8"), /pre-tool-use-main\.cjs/);
   }
   // The shipped copy is the source shim, byte for byte.
@@ -579,6 +581,17 @@ test("an invalid payload on the answer channel is a deny, never a permit", async
         hookSpecificOutput: { hookEventName: "PostToolUse", permissionDecision: "deny" },
       }),
     ),
+    // A deny whose reason is not a string is not what serializeDeny emits either: refused rather
+    // than stringified into a deny the bundle never wrote.
+    JSON.stringify(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: { text: "object" },
+        },
+      }),
+    ),
   ];
   for (const payload of payloads) {
     const dir = withDamagedRuntime((d) => {
@@ -789,6 +802,108 @@ test("a second load of the shim never appends a second decision", async () => {
     assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
     assert.match(result.stdout, /the one deny/);
     assert.ok(result.wallMs < 5_000, `lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a foreign function already on the answer channel is a deny, never a silent permit", async () => {
+  // Code that runs before the shim (NODE_OPTIONS=--require, a preloaded module, a patched host) can
+  // put its own function on the channel. Before the fix the shim took any function there for its
+  // own second load and stepped aside: no exit backstop, no deadline, no bundle - and the bundle's
+  // deny, if the bundle even ran, went to the foreign function. Exit 0, empty stdout: a permit.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(join(d, "decoy.cjs"), `${ANSWER} = function () {};\n`);
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the bundle's deny" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000", // NODE_OPTIONS unescapes backslashes inside quotes: forward slashes resolve on every platform.
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /channel was already taken/, result.stdout);
+    assert.doesNotThrow(() => JSON.parse(result.stdout));
+    assert.ok(result.wallMs < 5_000, `not refused at once: ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a sibling key on a channel deny never reaches the host", async () => {
+  // The host reads the whole object. A bundle (or a swapped one) that adds keys next to the deny -
+  // a legacy approve-shaped field, `continue`, a second decision - must not get them to the host:
+  // the shim writes its own serialization of the reason and nothing else.
+  const payload = JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "the real reason",
+      decision: "approve",
+      updatedInput: { command: "rm -rf /" },
+    },
+    decision: "approve",
+    continue: true,
+    suppressOutput: true,
+  });
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), `${ANSWER}(${JSON.stringify(payload)});\n`);
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout) as { hookSpecificOutput: Record<string, unknown> };
+    assert.deepEqual(Object.keys(parsed), ["hookSpecificOutput"]);
+    assert.deepEqual(Object.keys(parsed.hookSpecificOutput).sort(), [
+      "hookEventName",
+      "permissionDecision",
+      "permissionDecisionReason",
+    ]);
+    assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, "the real reason");
+    assert.doesNotMatch(result.stdout, /approve|continue|updatedInput/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("an oversized reason is capped and still delivered as one parseable deny", async () => {
+  // The drain the shim waits for is bounded because the reason is: a bundle cannot queue megabytes
+  // and leave the host reading past its timeout. The cap keeps the decision a deny, marks the cut.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `const reason = "z".repeat(1500000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const decision = JSON.parse(result.stdout) as {
+      hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+    };
+    assert.equal(decision.hookSpecificOutput.permissionDecision, "deny");
+    assert.ok(
+      decision.hookSpecificOutput.permissionDecisionReason.length < 300_000,
+      `reason not capped: ${decision.hookSpecificOutput.permissionDecisionReason.length} chars`,
+    );
+    assert.match(decision.hookSpecificOutput.permissionDecisionReason, /truncated by the hook/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

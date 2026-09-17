@@ -22,7 +22,9 @@
 // The answer channel is a registered symbol on globalThis, so any code running inside this process
 // can find it and call it; that code could equally patch process.exit or write to fd 1, so it is
 // no new trust boundary - the channel only ever accepts a deny, never an allow, and a stray permit
-// neither disarms the deadline nor outranks a later deny.
+// neither disarms the deadline nor outranks a later deny. A channel that some other code installed
+// before the shim (a preloaded module, NODE_OPTIONS=--require) is refused with a deny, never
+// adopted as the owner of the decision.
 const fs = require("node:fs");
 
 const DEFAULT_DEADLINE_MS = 28000;
@@ -30,6 +32,13 @@ const MIN_DEADLINE_MS = 1000;
 // Under the 30 s SDK request budget and 5 s under the host's 35 s timeout: node start-up and the
 // bundle load (~0.2 s warm, more under a cold cache or a scanner) must fit inside the margin.
 const MAX_DEADLINE_MS = 30000;
+// A queued decision waits for the host to read it until this long past the deadline, then the shim
+// gives up with a blocking exit. 30 s + 2 s stays under the host's 35 s timeout.
+const DRAIN_GRACE_MS = 2000;
+// The longest reason forwarded to the host. A judge verdict is a few hundred characters; the cap
+// bounds what a bundle can queue and so bounds the drain the grace period above must cover.
+const MAX_REASON_CHARS = 262144;
+const CHANNEL = Symbol.for("atbash.hook.answer");
 
 // stdout is the host's decision channel, and only the shim writes to it. The bundled hook hands its
 // decision to the shim in-process, through the function installed below under a registered symbol
@@ -42,7 +51,7 @@ const MAX_DEADLINE_MS = 30000;
 // serializeDeny emits (tests pin the coupling). It never accepts an allow: the bundle's allow is
 // silence, which leaves the host's own permission rules and every other hook in force, and the
 // channel must not be a more powerful primitive than that. Anything else on the channel is an
-// invalid decision and is denied.
+// invalid decision and is denied - including a deny whose reason is not a string.
 function isDecision(text) {
   const trimmed = text.trim();
   if (!trimmed.startsWith("{")) return false;
@@ -52,7 +61,8 @@ function isDecision(text) {
       typeof out === "object" &&
       out !== null &&
       out.hookEventName === "PreToolUse" &&
-      out.permissionDecision === "deny"
+      out.permissionDecision === "deny" &&
+      typeof out.permissionDecisionReason === "string"
     );
   } catch {
     return false;
@@ -65,8 +75,10 @@ function isDecision(text) {
 // "" from anywhere in-process must never swallow the real decision.
 let decided = false;
 let permitted = false;
-// False on a second load of the shim in the same process: the channel, exit listener, deadline
-// and bundle then belong to the first load, and this one does nothing.
+// False only when the channel already holds a function this shim itself installed: a second load
+// of the same file in the same process (two paths are two require-cache entries). The first load
+// then owns the channel, the exit backstop, the deadline and the bundle, and this load does
+// nothing. Anything else already on the channel is foreign, and that is a deny (below).
 let firstLoad = true;
 // Set once a queued decision has fully left the process (the write callback ran without error).
 let delivered = false;
@@ -91,23 +103,35 @@ function answer(output) {
   // large reason can still drain when the host reads late. The callback ends the process; a write
   // error is a blocking exit, never a permit-shaped 0 with the deny lost; a synchronous throw
   // (a library ended or destroyed the stream) is the same blocking exit; a host that never reads
-  // (no callback) is ended by the same 2 s exit-2 backstop the deadline's decided branch uses.
+  // (no callback) is ended by an exit-2 watchdog at the same moment the deadline's decided branch
+  // would end the process: DRAIN_GRACE_MS past the deadline, never sooner than the grace itself.
   // The bytes written are the shim's own canonical serialization of the bundle's reason - no
   // sibling key the bundle did not have to prove (an approve-shaped legacy field, say) reaches
   // the host.
-  const text = denyJson(
-    String(JSON.parse(output.trim()).hookSpecificOutput.permissionDecisionReason ?? ""),
-  );
-  setTimeout(() => process.exit(2), 2000).unref();
+  const text = denyJson(JSON.parse(output.trim()).hookSpecificOutput.permissionDecisionReason);
+  setTimeout(
+    () => exitBlocking("Atbash ERROR: the host did not read the decision in time."),
+    drainBudgetMs(),
+  ).unref();
   try {
     stdoutWrite(text, (error) => {
-      if (error) exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+      if (error) {
+        exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+        return;
+      }
       delivered = true;
       process.exit(0);
     });
   } catch {
     exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
   }
+}
+
+function drainBudgetMs() {
+  // Until DRAIN_GRACE_MS past the deadline (which counts from process start), at least the grace.
+  const budget = deadlineMs === null ? DEFAULT_DEADLINE_MS : deadlineMs;
+  const remaining = budget - Math.ceil(process.uptime() * 1000);
+  return Math.max(0, remaining) + DRAIN_GRACE_MS;
 }
 // Set when the stdout pipe reports an error after the bundle's decision was queued (the host went
 // away): the decision was lost, and the decided branch below must not end with a permit-shaped 0.
@@ -116,8 +140,9 @@ let stdoutWrite = null;
 
 function exitBlocking(reason) {
   // Nothing can reach stdout: exit 2 is a blocking error for the host, never an empty permit.
+  // `delivered` stays false: should process.exit itself have been patched away in-process, the
+  // exit backstop still turns this into exit code 2 rather than a permit-shaped 0.
   decided = true;
-  delivered = true;
   try {
     fs.writeSync(2, reason + "\n");
   } catch {
@@ -153,8 +178,18 @@ function deny(reason) {
     // process end. If the pipe broke or never drains, exit 2 (a blocking error) rather than a
     // permit-shaped 0 or a wait for the host timeout.
     if (stdoutBroken) exitBlocking(reason);
-    setTimeout(() => process.exit(2), 2000).unref();
-    stdoutWrite("", (error) => process.exit(error ? 2 : 0));
+    setTimeout(
+      () => exitBlocking("Atbash ERROR: the host did not read the decision in time."),
+      DRAIN_GRACE_MS,
+    ).unref();
+    stdoutWrite("", (error) => {
+      if (error) {
+        exitBlocking("Atbash ERROR: the decision could not be delivered to the host.");
+        return;
+      }
+      delivered = true;
+      process.exit(0);
+    });
     return;
   }
   decided = true;
@@ -168,26 +203,78 @@ function deny(reason) {
 }
 
 function denyJson(reason) {
+  const text =
+    reason.length > MAX_REASON_CHARS
+      ? reason.slice(0, MAX_REASON_CHARS) + " [reason truncated by the hook]"
+      : reason;
   return (
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: reason,
+        permissionDecisionReason: text,
       },
     }) + "\n"
   );
 }
 
-// The channel is installed once. A second load of the shim in the same process (two paths to the
-// same file are two require-cache entries) finds the first one and keeps it rather than dying on
-// "cannot redefine property".
+// The exit-time backstop, registered before anything below can go wrong. Every fail-closed
+// trigger needs an event: a throw, a rejection, a load failure, or the deadline timer - and the
+// timer is unref'd so a hook that answered can end. A bundle that simply RETURNS without
+// answering (an early return, a swallowed error, a truncated or swapped bundle whose top-level
+// call is gone, a library calling process.exit(0)) fires none of them: the loop drains, node
+// exits 0 with an empty stdout, and the host reads a permit. So the last word is here: at exit,
+// no decision and no permit is a deny written synchronously with exit 0; a decision whose stdout
+// write errored (the host went away) or never drained (in-process code ended the process first)
+// is a blocking exit code rather than a permit-shaped 0; a permit stays silence. On a second load
+// of the shim (firstLoad false, decided below) the first load's listener owns the exit and this
+// one is silent - two listeners would write two decisions, which the host cannot parse. What this
+// cannot cover: process.abort or a signal from the native addon ends the process without running
+// exit listeners (a non-0/2 exit, which the host treats as non-blocking).
+process.on("exit", () => {
+  if (!firstLoad) return;
+  if (decided) {
+    // A decision that was queued but never drained (the host went away, or in-process code called
+    // process.exit while the deny was still in the pipe) must not end as a permit-shaped 0 with
+    // partial or empty stdout. A blocking exit code is the honest answer.
+    if (stdoutBroken || !delivered) process.exitCode = 2;
+    return;
+  }
+  if (permitted) return;
+  decided = true;
+  try {
+    writeDecisionSync(denyJson("Atbash ERROR: the hook ended without a decision."));
+    delivered = true;
+    process.exitCode = 0;
+  } catch {
+    try {
+      fs.writeSync(2, "Atbash ERROR: the hook ended without a decision.\n");
+    } catch {
+      // nothing left to report to
+    }
+    process.exitCode = 2;
+  }
+});
+
+// The channel is installed once, branded as this shim's own. A second load of the shim in the same
+// process (two paths to the same file are two require-cache entries) finds the branded function
+// and steps aside. Anything else already on the channel - a function some preloaded module put
+// there (NODE_OPTIONS=--require, a patched host), or a non-function value - is foreign: the
+// bundle's deny would go to that code, not to the host, so the tool call is denied here and now.
+// The brand is not a secret (in-process code can forge it; see the boundary note at the top): it
+// distinguishes the shim's own second load from everything else, so that no pre-installed
+// function turns the shim into a silent permit.
 try {
-  const existing = globalThis[Symbol.for("atbash.hook.answer")];
-  if (typeof existing === "function") {
-    firstLoad = false;
+  const existing = globalThis[CHANNEL];
+  if (existing !== undefined) {
+    if (typeof existing === "function" && existing.atbashShim === true) {
+      firstLoad = false;
+    } else {
+      deny("Atbash ERROR: the hook's decision channel was already taken.");
+    }
   } else {
-    Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), {
+    Object.defineProperty(answer, "atbashShim", { value: true });
+    Object.defineProperty(globalThis, CHANNEL, {
       value: answer,
       writable: false,
       configurable: false,
@@ -198,57 +285,25 @@ try {
   exitBlocking("Atbash ERROR: the hook could not install its decision channel.");
 }
 
-// The exit-time backstop. Every fail-closed trigger above needs an event: a throw, a rejection, a
-// load failure, or the deadline timer - and the timer is unref'd so a hook that answered can end.
-// A bundle that simply RETURNS without answering (an early return, a swallowed error, a truncated
-// or swapped bundle whose top-level call is gone, a library calling process.exit(0)) fires none of
-// them: the loop drains, node exits 0 with an empty stdout, and the host reads a permit. So the
-// last word is here: at exit, no decision and no permit is a deny written synchronously with exit
-// 0; a decision whose stdout write errored (the host went away) or never drained (in-process code
-// ended the process first) is a blocking exit code rather than
-// a permit-shaped 0; a permit stays silence. What this cannot cover: process.abort or a signal
-// from the native addon ends the process without running exit listeners (a non-0/2 exit, which the
-// host treats as non-blocking).
-if (firstLoad)
-  process.on("exit", () => {
-    if (decided) {
-      // A decision that was queued but never drained (the host went away, or in-process code called
-      // process.exit while the deny was still in the pipe) must not end as a permit-shaped 0 with
-      // partial or empty stdout. A blocking exit code is the honest answer.
-      if (stdoutBroken || !delivered) process.exitCode = 2;
-      return;
-    }
-    if (permitted) return;
-    decided = true;
-    try {
-      writeDecisionSync(denyJson("Atbash ERROR: the hook ended without a decision."));
-      delivered = true;
-      process.exitCode = 0;
-    } catch {
-      try {
-        fs.writeSync(2, "Atbash ERROR: the hook ended without a decision.\n");
-      } catch {
-        // nothing left to report to
-      }
-      process.exitCode = 2;
-    }
-  });
-
 // Installing the stdout guard touches process.stdout, which can itself throw when fd 1 is closed at
 // spawn (EBADF); that must end as a blocking error, not as node's default exit 1 with no output.
-try {
-  stdoutWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.on("error", () => {
-    stdoutBroken = true;
-  });
-  // A host that closed stderr must not turn every diverted log line into a crash deny.
-  process.stderr.on("error", () => {});
-  // Every write the bundle makes to process.stdout is a log line: to stderr, whatever it looks like.
-  process.stdout.write = function (chunk, encoding, callback) {
-    return process.stderr.write(chunk, encoding, callback);
-  };
-} catch {
-  exitBlocking("Atbash ERROR: the hook could not attach to the host's output.");
+// Only the first load installs it: a second load would wrap the diverter again and add a second
+// error listener - harmless, but a second load does nothing at all.
+if (firstLoad) {
+  try {
+    stdoutWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.on("error", () => {
+      stdoutBroken = true;
+    });
+    // A host that closed stderr must not turn every diverted log line into a crash deny.
+    process.stderr.on("error", () => {});
+    // Every write the bundle makes to process.stdout is a log line: to stderr, whatever it looks like.
+    process.stdout.write = function (chunk, encoding, callback) {
+      return process.stderr.write(chunk, encoding, callback);
+    };
+  } catch {
+    exitBlocking("Atbash ERROR: the hook could not attach to the host's output.");
+  }
 }
 
 function resolveDeadlineMs(raw) {
