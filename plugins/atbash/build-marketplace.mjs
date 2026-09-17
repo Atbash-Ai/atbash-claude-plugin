@@ -15,18 +15,28 @@ const sdkVersion = sdkPackage.version;
 if (typeof sdkVersion !== "string" || sdkVersion.length === 0) {
   throw new Error(`Could not resolve the installed Atbash SDK version from ${sdkPackagePath}.`);
 }
-const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmCli = process.env.npm_execpath;
 const runtimeDir = "runtime";
 const tempDir = await mkdtemp(join(tmpdir(), "atbash-marketplace-"));
 
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: "utf8" });
+  if (result.error) {
+    throw new Error(`${command} could not start: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(
       `${command} ${args.join(" ")} failed:\n${result.stderr || result.stdout || "unknown error"}`,
     );
   }
   return result.stdout;
+}
+
+function runNpm(args) {
+  if (typeof npmCli !== "string" || npmCli.length === 0) {
+    throw new Error("build:marketplace must run through the pinned npm client");
+  }
+  return run(process.execPath, [npmCli, ...args]);
 }
 
 try {
@@ -40,7 +50,7 @@ try {
 
   const platforms = {};
   for (const [platform, packageName] of Object.entries(nativePackages)) {
-    const packOutput = run(npmExecutable, [
+    const packOutput = runNpm([
       "pack",
       `${packageName}@${sdkVersion}`,
       "--pack-destination",
