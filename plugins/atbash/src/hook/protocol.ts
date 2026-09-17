@@ -137,12 +137,10 @@ const channelAtLoad: unknown = (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown 
 
 /** Hand the decision to the shim when it is present; write it to stdout when running bare. */
 export function deliverDecision(output: string): void {
-  const answer =
-    typeof channelAtLoad === "function"
-      ? channelAtLoad
-      : (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[HOOK_ANSWER_CHANNEL];
-  if (typeof answer === "function") {
-    (answer as HookAnswer)(output);
+  // The load-time capture or stdout, never a call-time lookup: a function installed under the
+  // symbol after load (a bare run with in-process code) must not receive the decision.
+  if (typeof channelAtLoad === "function") {
+    (channelAtLoad as HookAnswer)(output);
     return;
   }
   if (output !== "") {

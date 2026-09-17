@@ -11,7 +11,15 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -676,32 +684,36 @@ test("a permit followed by a lingering handle is still denied at the deadline", 
   }
 });
 
-test("a bundle deny after a library destroyed the stdout stream never ends as a permit", async () => {
-  // process.stdout.write is intercepted, but end()/destroy() are not. Two correct outcomes exist,
-  // by platform: where the destroyed stream still reaches the pipe (Windows stdio pipes are
-  // synchronous), the deny is delivered and the exit is 0; where the write errors, the shim must
-  // end with exit 2 and the reason on stderr. What must never happen is the third shape: the loop
-  // draining into exit 0 with an empty stdout, which the host reads as a permit.
+test("a bundle deny that arrives after the host closed stdout is a blocking exit, never a permit", async () => {
+  // The host has gone away (its read end is closed) when the bundle answers. The write fails
+  // asynchronously: before the callback existed, nothing threw, nothing was written, the loop
+  // drained and the process ended 0 with an empty stdout - a permit. Now the callback's error is a
+  // blocking exit with the reason on stderr. (A stream the bundle itself destroyed is not the same
+  // case: on Windows stdio pipes stay writable after destroy() and the deny is simply delivered.)
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `process.stdout.destroy(); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "lost deny" } }));
-`,
+      `setTimeout(() => ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "late deny" } })), 400);\n`,
     );
   });
   try {
-    const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
-      { ATBASH_HOOK_DEADLINE_MS: "6000" },
-      dir,
-    );
-    const delivered = result.code === 0 && /lost deny/.test(result.stdout);
-    const blocking = result.code === 2 && /could not be delivered/.test(result.stderr);
-    assert.ok(
-      delivered || blocking,
-      `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}, stderr ${JSON.stringify(result.stderr)}`,
-    );
-    if (delivered) assert.doesNotThrow(() => JSON.parse(result.stdout));
+    const result = await new Promise<RunResult>((resolve) => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "6000" },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d));
+      child.stdout.destroy();
+      child.stdin.end(JSON.stringify(makeHookInput()));
+      child.on("close", (code) =>
+        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started }),
+      );
+    });
+    assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stderr, /could not be delivered|did not finish/, result.stderr);
     assert.ok(result.wallMs < 5_000, `waited ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -744,6 +756,89 @@ test("a bundle that returns without answering is denied at exit, never a permit"
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
+  }
+});
+
+test("a second load of the shim never appends a second decision", async () => {
+  // Two paths to the same shim file are two require-cache entries. The second load must find the
+  // installed channel and do nothing else: no second exit listener with its own state, no second
+  // deadline, no second bundle load. Before the fix the second listener appended "ended without a
+  // decision" after the real deny - two JSON objects, which the host cannot parse: a permit.
+  const dir = withDamagedRuntime((d) => {
+    copyFileSync(join(d, "pre-tool-use.cjs"), join(d, "pre-tool-use-copy.cjs"));
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `require("./pre-tool-use-copy.cjs"); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the one deny" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(
+      result.stdout.match(/"permissionDecision":/g)?.length,
+      1,
+      `stdout: ${JSON.stringify(result.stdout)}`,
+    );
+    assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
+    assert.match(result.stdout, /the one deny/);
+    assert.ok(result.wallMs < 5_000, `lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a decision cut short by an in-process exit is never a permit", async () => {
+  // A 200 KB deny is queued, then in-process code calls process.exit(0) before the host has read it.
+  // Where the pipe is asynchronous (POSIX) the bytes are still in the pipe: the exit listener sees a
+  // decision that never drained and ends with exit 2. Where stdio pipes are synchronous (Windows)
+  // the write completes before the exit runs and the full deny is delivered with exit 0. Never the
+  // third shape: exit 0 with a truncated, unparseable stdout.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `const reason = "y".repeat(200000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetImmediate(() => process.exit(0));\n`,
+    );
+  });
+  try {
+    const result = await new Promise<RunResult>((resolve) => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "6000" },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.pause();
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.stdin.end(JSON.stringify(makeHookInput()));
+      setTimeout(() => child.stdout.resume(), 1_500);
+      child.on("close", (code) => resolve({ code, stdout, stderr, wallMs: Date.now() - started }));
+    });
+    const complete = (() => {
+      try {
+        return (
+          (
+            JSON.parse(result.stdout) as {
+              hookSpecificOutput: { permissionDecisionReason: string };
+            }
+          ).hookSpecificOutput.permissionDecisionReason.length === 200_000
+        );
+      } catch {
+        return false;
+      }
+    })();
+    assert.ok(
+      (result.code === 0 && complete) || result.code === 2,
+      `exit ${result.code}, stdout length ${result.stdout.length}, stderr ${JSON.stringify(result.stderr)}`,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
   }
 });
 

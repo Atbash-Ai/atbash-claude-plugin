@@ -27,6 +27,7 @@ export async function runPreToolUseCli(): Promise<void> {
     output = serializeDeny("Atbash ERROR: the hook input could not be read.");
   }
 
-  // A permit is the empty string: the shim records "answered" and writes nothing.
+  // A permit is the empty string: the shim records it (a permit is never final - a later deny
+  // overrides it and the deadline still applies) and writes nothing.
   deliverDecision(output);
 }
