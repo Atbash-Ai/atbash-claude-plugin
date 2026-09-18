@@ -1137,10 +1137,10 @@ test("a small deny to a host that never reads is delivered into the pipe and the
 test("a transport that never accepts the decision ends with a blocking exit, never a permit", async () => {
   // Defence in depth behind the byte bound: should the synchronous write to fd 1 never be
   // accepted (a full non-blocking pipe answers EAGAIN; here the transport is replaced at the
-  // file-descriptor level so it answers EAGAIN for good), the retry gives up at the write's time
-  // budget (two seconds per write; this path makes two writes at most, the answer's and the
-  // blocking exit's) and the shim ends with exit 2 and the reason on stderr - nothing on stdout,
-  // never a permit-shaped 0, never a wait for the host's timeout.
+  // file-descriptor level so it answers EAGAIN for good), the retry gives up at the stall budget
+  // (two seconds without an accepted byte; this path makes two writes at most, the answer's and
+  // the blocking exit's) and the shim ends with exit 2 and the reason on stderr - nothing on
+  // stdout, never a permit-shaped 0, never a wait for the host's timeout.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "decoy.cjs"),
@@ -1176,8 +1176,9 @@ test("a transport that never accepts the decision ends with a blocking exit, nev
       "",
       "nothing reached the host: the transport never accepted a byte",
     );
-    // Two writes of at most two seconds each, plus start-up: under six seconds.
-    assert.ok(result.wallMs < 6_000, `did not give up: ${result.wallMs} ms`);
+    // Two stalls of at most two seconds each, plus two node start-ups on a loaded Windows runner
+    // (4.5 s measured): eight seconds keeps the bound about the budget, not the machine.
+    assert.ok(result.wallMs < 8_000, `did not give up: ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1327,11 +1328,12 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
 
 test("a transport that accepts one byte per stall never holds the hook past the host's hook timeout", async () => {
   // A pipe that takes the deny a byte at a time, refusing (EAGAIN) between bytes, must not hold
-  // the hook past the host's 35 s timeout: a hook that times out is a permit on both hosts. The
-  // retries are bounded per write, not per accepted byte, so the shim gives up after a bounded
-  // wait with exit 2 and the reason on stderr; whatever prefix reached the host is not a decision
-  // (Claude Code blocks on the exit code; a host that cannot take a deny is the documented Codex
-  // residual). Before the bound, a 900-byte deny through this transport took over 45 s.
+  // the hook past the host's 35 s timeout: a hook that times out is a permit on both hosts. Each
+  // accepted byte is progress, so the stall budget does not end this; the absolute give-up (two
+  // seconds past the configured deadline, 6 s here) does - exit 2 and the reason on stderr, and
+  // whatever prefix reached the host is not a complete decision (Claude Code blocks on the exit
+  // code; a host that cannot take a deny is the documented Codex residual). Before the bound, a
+  // 900-byte deny through this transport took over 45 s.
   const reason = "x".repeat(800);
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
@@ -1374,14 +1376,13 @@ test("a transport that accepts one byte per stall never holds the hook past the 
     assert.match(result.stderr, /could not be delivered/);
     assert.doesNotMatch(
       result.stdout,
-      /"permissionDecision"/,
-      "no complete decision can have reached the host",
+      /"permissionDecisionReason":"x{800}"/,
+      "the whole deny cannot have reached the host",
     );
     assert.ok(
-      result.stdout.length < 64,
-      `more than a prefix reached the host: ${result.stdout.length} bytes`,
+      result.wallMs >= 7_000 && result.wallMs < 10_000,
+      `ended at ${result.wallMs} ms, not at the give-up`,
     );
-    assert.ok(result.wallMs < 10_000, `held the hook for ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1546,10 +1547,10 @@ test("a channel accessor that reads undefined and then claims a decision is stil
 
 test("a transport that accepts one byte per call without refusing never holds the hook past the host's hook timeout", async () => {
   // The other shape of a dribbling transport: every call accepts one byte and takes its time,
-  // never answering EAGAIN. The bound is a clock checked on every turn of the loop, not a count of
-  // refusals, so this shape ends at the write's budget too - exit 2, a prefix on stdout, inside
-  // the host's timeout. Before the clock moved to the loop, a 900-byte deny at 40 ms per byte held
-  // the hook for 44 s (measured), past the host's 35 s.
+  // never answering EAGAIN. Each byte is progress, so the stall budget never fires; the absolute
+  // give-up (two seconds past the configured deadline, 6 s here) ends it - exit 2, a prefix on
+  // stdout, inside the host's timeout. Before the clock moved to the loop, a 900-byte deny at
+  // 40 ms per byte held the hook for 44 s (measured), past the host's 35 s.
   const reason = "y".repeat(800);
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
@@ -1589,7 +1590,10 @@ test("a transport that accepts one byte per call without refusing never holds th
       /"permissionDecisionReason":"y{800}"/,
       "the whole deny cannot have been written",
     );
-    assert.ok(result.wallMs < 10_000, `held the hook for ${result.wallMs} ms`);
+    assert.ok(
+      result.wallMs >= 7_000 && result.wallMs < 10_000,
+      `ended at ${result.wallMs} ms, not at the give-up`,
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1623,6 +1627,117 @@ test("a bundle that blanks fs.writeSync cannot turn the deny into an empty, perm
     assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
     assert.match(result.stdout, /a blanked writeSync/);
     assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a bundle that blocks the event loop past the delivery give-up still gets its deny onto a healthy stdout", async () => {
+  // A synchronous stall inside the bundle that outlives the absolute give-up (two seconds past the
+  // configured 30 s deadline) but ends before the host's 35 s timeout: the deadline timer could
+  // not fire while the loop was blocked, so the exit backstop's deny is the last word - and it
+  // must be written, not refused by a clock that never allowed a first attempt (exit 2 with an
+  // empty stdout, a Codex permit). The write is attempted once whatever the time; the bounds cap
+  // retries only.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 32_600);\nmodule.exports = 1;\n",
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "30000" },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.ok(result.wallMs >= 32_000 && result.wallMs < 35_000, `stalled ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a host that is merely slow to drain still gets a deny on stdout, never a blocking exit", async () => {
+  // The lower bound of the stall budget: a transport that refuses (EAGAIN) for the first 1.5 s of
+  // the process and then accepts is a host that is slow, not gone. The bundle's own deny must
+  // reach it with exit 0 - under the earlier ~1 s retry budget this ended exit 2 with nothing on
+  // stdout, which Codex 0.154.0 runs the tool call on. Pins the budget from below so a later
+  // "tighten the budget" change cannot pass the suite while losing the deny.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, ...rest) {",
+        "  if (fd !== 1 || process.uptime() * 1000 >= 1500) return original.call(this, fd, ...rest);",
+        '  const error = new Error("EAGAIN: resource temporarily unavailable, write");',
+        '  error.code = "EAGAIN";',
+        "  throw error;",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the judge's own verdict" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /the judge's own verdict/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a transport that accepts the deny slowly but steadily still gets the whole deny before the host's timeout", async () => {
+  // A pipe that takes one byte per call, 30 ms apart, without ever refusing: slow, not stalled.
+  // A fixed per-write budget abandoned this at two seconds with a fragment on stdout and exit 2 -
+  // unparseable plus a non-blocking code, a Codex permit - where the earlier design delivered the
+  // whole deny. Progress resets the stall clock, so the deny (about 160 bytes, about 5 s here) is
+  // delivered in full with exit 0, well inside the give-up two seconds past the default deadline.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        "  if (fd !== 1) return original.apply(this, arguments);",
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);",
+        "  return original.call(this, fd, buffer, offset, 1);",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a slow but steady transport" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"` },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /a slow but steady transport/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.ok(result.wallMs >= 3_000 && result.wallMs < 30_000, `took ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -31,12 +31,15 @@
 // no hook can help; a refusal whose own write fails is that case whatever the function on the
 // channel claims (a mark on a function this load did not install is not evidence, and 0 with an
 // empty stdout would be a permit on both hosts), so a genuine first load's deny can sit on stdout
-// behind that 2 - a Codex permit - only when process.exit was made a no-op in-process. In-process code that makes process.exit THROW ends the hook at node's exit 1
+// behind that 2 - a Codex permit - only when process.exit was made a no-op in-process.
+// In-process code that makes process.exit THROW ends the hook at node's exit 1
 // (non-blocking for the host) whatever the shim does; code that makes it a NO-OP leaves a
 // complete deny on stdout with the process alive until the host's timeout (a permit on Claude
 // Code), and a second copy of the shim loaded after that deny adds its refusal deny behind it
 // (two objects, unparseable, a permit on Codex); code running after the channel exists can mark
-// the channel function as decided and silence every later deny, exactly as it could call the
+// the channel function as decided and silence every later deny (or freeze that function so the
+// mark can never be set, which lets a refused second load's deny be followed by the first
+// load's backstop deny - two objects, unparseable), exactly as it could call the
 // channel's permit or blank fs.writeSync - all of it is the same in-process control as patching
 // fs, and out of scope. A pipe write to a host that never reads blocks on Windows for any
 // deny larger than the pipe's buffer, and nothing in-process can interrupt it (a blocked event
@@ -68,25 +71,28 @@ const MAX_DEADLINE_MS = 30000;
 // process.exit then joins at shutdown - so no watchdog can interrupt a blocked write (measured on
 // both paths). A judge verdict is a few hundred characters (the bundle's own cap is 800 characters,
 // up to about 4.8 KB serialized when every one needs escaping), so the bound cuts a real reason
-// only when it is escape-heavy, and a swapped or damaged bundle's reason always; the mark says so. Bytes, not characters: JSON escaping
+// only when it is escape-heavy, and a swapped or damaged bundle's reason always; the mark says
+// so. Bytes, not characters: JSON escaping
 // doubles a quote or a newline and a non-ASCII character is up to three bytes.
 const MAX_DENY_BYTES = 3584;
 const TRUNCATION_MARK = " [reason truncated by the hook]";
 // The synchronous write's time budget. A momentarily full pipe answers EAGAIN (POSIX, where fd 1
 // is non-blocking once process.stdout exists) and is retried; a transport that keeps refusing,
-// or takes the deny a byte at a time (with or without refusing in between), must not hold the
-// hook past the host's timeout - a hook that times out is a permit on both hosts. So the write
-// is bounded twice, in wall-clock time and at the top of every loop turn: a budget per write,
-// counted from the write's first attempt, and an absolute give-up from process start past which
-// no write is attempted at all - two seconds after the largest deadline, inside the host's 35 s
-// with room for the exit. Beyond either bound the write is an error and the hook ends with a
-// blocking exit code. Two seconds per write is generous for a host that is merely slow to
-// drain (the deny is bounded under the smallest pipe buffer a host hands a hook and nothing
-// else in the process writes to fd 1, so the pipe is empty when the deny arrives) and short
-// enough that the two writes a path can make stay well inside the absolute bound.
+// or takes the deny a byte at a time, must not hold the hook past the host's timeout - a hook
+// that times out is a permit on both hosts. So the write is bounded twice, in wall-clock time:
+// a stall budget - the longest the write may go without a single accepted byte - and an
+// absolute give-up (below, two seconds past the configured deadline) past which no retry is
+// attempted at all. Both are checked at the top of every loop turn but the first: every write
+// gets one attempt whatever the clock says, because a bundle that blocked the event loop past
+// the give-up and then answered must still put its deny on a healthy stdout (exit 2 with an
+// empty stdout would be a Codex permit). A transport that keeps accepting bytes, however slowly,
+// is not stalled and gets the whole deny as long as the give-up allows; one that stops
+// accepting for the stall budget, or stalls the first byte, is an error and the hook ends with
+// a blocking exit code. Two seconds is generous for a host that is merely slow to drain (the
+// deny is bounded under the smallest pipe buffer a host hands a hook and nothing else in the
+// process writes to fd 1, so the pipe is empty when the deny arrives).
 const WRITE_RETRY_WAIT_MS = 25;
-const WRITE_BUDGET_MS = 2000;
-const DELIVERY_GIVE_UP_MS = MAX_DEADLINE_MS + 2000;
+const WRITE_STALL_BUDGET_MS = 2000;
 const CHANNEL = Symbol.for("atbash.hook.answer");
 
 function resolveDeadlineMs(raw) {
@@ -99,6 +105,10 @@ function resolveDeadlineMs(raw) {
 }
 // Resolved before anything below can run, so no path can reach the deadline before it exists.
 const deadlineMs = resolveDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS);
+// The absolute give-up for the deny write: two seconds past the deadline this run was configured
+// with (the largest one when the value was invalid - a deny is on its way regardless), inside
+// the host's 35 s with room for the exit. A retry never starts after it; a first attempt does.
+const DELIVERY_GIVE_UP_MS = (deadlineMs ?? MAX_DEADLINE_MS) + 2000;
 
 // stdout is the host's decision channel, and only the shim writes to it. The bundled hook hands its
 // decision to the shim in-process, through the function installed below under a registered symbol
@@ -264,21 +274,29 @@ function writeDecisionSync(output) {
   // Every byte, or an error: a pipe write can be partial, and on POSIX the pipe behind fd 1 is
   // non-blocking once process.stdout exists, so a momentarily full pipe answers EAGAIN - retried
   // within the bounds above rather than treated as a dead host, and never for long enough to
-  // outlive the host's timeout. The bounds are checked on every turn of the loop, so a transport
-  // that takes the deny a byte at a time is held to the same clock whether it refuses in between
-  // (EAGAIN) or merely dribbles: past the budget the write is an error, then the blocking exit.
+  // outlive the host's timeout. Progress resets the stall clock, so a transport that keeps
+  // taking bytes, however slowly, is not a stall; a write that returns nothing is.
   const buffer = Buffer.from(output, "utf8");
-  const startedMs = Math.ceil(process.uptime() * 1000);
   let offset = 0;
+  let attempts = 0;
+  let lastProgressMs = Math.ceil(process.uptime() * 1000);
   while (offset < buffer.length) {
-    const nowMs = Math.ceil(process.uptime() * 1000);
-    if (nowMs >= DELIVERY_GIVE_UP_MS || nowMs - startedMs >= WRITE_BUDGET_MS) {
-      const error = new Error("the decision could not be written within its time budget");
-      error.code = "ETIMEDOUT";
-      throw error;
+    // Every write gets one attempt whatever the clock says: a bundle that blocked the event loop
+    // past the give-up (a synchronous stall the host's timeout has not ended yet) must still put
+    // its deny on a healthy stdout rather than end 2 with an empty one - a Codex permit. The
+    // bounds apply from the second turn on: they cap the retries, never the first syscall.
+    if (attempts > 0) {
+      const nowMs = Math.ceil(process.uptime() * 1000);
+      if (nowMs >= DELIVERY_GIVE_UP_MS || nowMs - lastProgressMs >= WRITE_STALL_BUDGET_MS) {
+        const error = new Error("the decision could not be written within its time budget");
+        error.code = "ETIMEDOUT";
+        throw error;
+      }
     }
+    attempts += 1;
     try {
       const written = writeSync(1, buffer, offset, buffer.length - offset);
+      if (written > 0) lastProgressMs = Math.ceil(process.uptime() * 1000);
       offset += written;
       stdoutBytes += written;
     } catch (error) {
