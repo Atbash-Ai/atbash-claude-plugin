@@ -188,7 +188,7 @@ function runAgainstNonReadingHost(
     const consumer = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
       stdio: ["pipe", "ignore", "ignore"],
     });
-    const started = Date.now();
+    const started = process.hrtime.bigint();
     const child = spawn(process.execPath, [entry], {
       cwd,
       env: { PATH: process.env.PATH, ...env },
@@ -205,7 +205,13 @@ function runAgainstNonReadingHost(
     child.on("close", (code) => {
       clearTimeout(guard);
       consumer.kill();
-      resolve({ code, stdout: "", stderr, wallMs: Date.now() - started, killed });
+      resolve({
+        code,
+        stdout: "",
+        stderr,
+        wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        killed,
+      });
     });
   });
 }
@@ -381,7 +387,7 @@ test("when stdout cannot be written the shim exits 2, never 0 with an empty outp
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1000" },
@@ -392,7 +398,12 @@ test("when stdout cannot be written the shim exits 2, never 0 with an empty outp
       child.stdout.destroy();
       child.stdin.end(JSON.stringify(makeHookInput()));
       child.on("close", (code) =>
-        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started }),
+        resolve({
+          code,
+          stdout: "",
+          stderr,
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
       );
     });
     assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
@@ -447,7 +458,7 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
@@ -460,7 +471,14 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
       child.stderr.on("data", (d) => (stderr += d));
       child.stdin.end(JSON.stringify(makeHookInput()));
       setTimeout(() => child.stdout.resume(), 2_000);
-      child.on("close", (code) => resolve({ code, stdout, stderr, wallMs: Date.now() - started }));
+      child.on("close", (code) =>
+        resolve({
+          code,
+          stdout,
+          stderr,
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
+      );
     });
     assert.equal(result.code, 0, result.stderr);
     const decision = JSON.parse(result.stdout) as {
@@ -756,7 +774,7 @@ test("a bundle deny that arrives after the host closed stdout is a blocking exit
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "6000" },
@@ -767,7 +785,12 @@ test("a bundle deny that arrives after the host closed stdout is a blocking exit
       child.stdout.destroy();
       child.stdin.end(JSON.stringify(makeHookInput()));
       child.on("close", (code) =>
-        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started }),
+        resolve({
+          code,
+          stdout: "",
+          stderr,
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
       );
     });
     assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
@@ -1307,7 +1330,7 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
@@ -1318,7 +1341,12 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
       child.stderr.destroy();
       child.stdin.end(JSON.stringify(makeHookInput()));
       child.on("close", (code) =>
-        resolve({ code, stdout, stderr: "", wallMs: Date.now() - started }),
+        resolve({
+          code,
+          stdout,
+          stderr: "",
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
       );
     });
     assert.equal(result.code, 0, `exit ${result.code}`);
