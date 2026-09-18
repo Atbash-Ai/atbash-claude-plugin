@@ -42,15 +42,16 @@ claude plugin update atbash@atbash-ai
 
 The plugin calls `Atbash.fromConfig()`. The SDK resolves values in this order: explicit SDK option, environment variable, then `~/.config/atbash/config.json`.
 
-| Setting           | Environment variable     | Required                                   |
-| ----------------- | ------------------------ | ------------------------------------------ |
-| Agent private key | `ATBASH_AGENT_KEY`       | Yes, unless present in the SDK config file |
-| Organization      | `ATBASH_ORG_NAME`        | Yes; must match the agent's onboarded org  |
-| Judge endpoint    | `ATBASH_ENDPOINT`        | No                                         |
-| Blockchain RID    | `ATBASH_BLOCKCHAIN_RID`  | No                                         |
-| Provider          | `ATBASH_PROVIDER`        | No                                         |
-| Provider model    | `ATBASH_PROVIDER_MODEL`  | No                                         |
-| Hook SDK timeout  | `ATBASH_HOOK_TIMEOUT_MS` | No; defaults to 30,000 ms                  |
+| Setting            | Environment variable      | Required                                   |
+| ------------------ | ------------------------- | ------------------------------------------ |
+| Agent private key  | `ATBASH_AGENT_KEY`        | Yes, unless present in the SDK config file |
+| Organization       | `ATBASH_ORG_NAME`         | Yes; must match the agent's onboarded org  |
+| Judge endpoint     | `ATBASH_ENDPOINT`         | No                                         |
+| Blockchain RID     | `ATBASH_BLOCKCHAIN_RID`   | No                                         |
+| Provider           | `ATBASH_PROVIDER`         | No                                         |
+| Provider model     | `ATBASH_PROVIDER_MODEL`   | No                                         |
+| Hook SDK timeout   | `ATBASH_HOOK_TIMEOUT_MS`  | No; defaults to 30,000 ms                  |
+| Hook hard deadline | `ATBASH_HOOK_DEADLINE_MS` | No; defaults to 28,000 ms (1,000-34,000)   |
 
 Only the private key is configured. The SDK validates it, uses it locally for agent identity and cryptographic signing, and derives the corresponding public key locally. The public key must already be onboarded to the named organization in the [Atbash agent dashboard](https://atbash.ai/risk-engine/agents), but it should not be added to the plugin configuration. The plugin never uploads the config file or private key to an MCP service.
 
@@ -136,12 +137,23 @@ You can deactivate Atbash from the `/plugin` menu or with `claude plugin disable
 | `BLOCK`                                     | Blocks this attempt                                               |
 | `ERROR` or inconsistent output              | Blocks this attempt                                               |
 | Missing/invalid configuration or hook input | Blocks this attempt                                               |
+| Judge still pending at the hard deadline    | Blocks this attempt                                               |
+| Hook runtime cannot load or crashes         | Blocks this attempt                                               |
 
 For `HOLD`, operator review remains in Atbash. The plugin does not auto-poll or auto-execute an approved action; retry the original request explicitly after approval.
 
 ## Coverage and limits
 
 The hook covers shell execution, file edits and writes, MCP calls, and the other tools that Claude Code exposes to `PreToolUse`. No tool name is exempt from judgment, including Atbash-named diagnostic tools. Direct SDK calls inside the hook do not trigger another host tool call and cannot recurse through this hook.
+
+### The host boundary
+
+Claude Code treats a hook that times out, or exits with any code other than 0 or 2, as a non-blocking error and lets the tool call proceed. Two failures that would silently remove the gate are therefore handled by the entry point itself (`runtime/pre-tool-use.cjs`, a small un-bundled shim that loads the bundled hook `runtime/pre-tool-use-main.cjs`):
+
+- **Hard deadline.** The SDK budget (`ATBASH_HOOK_TIMEOUT_MS`) applies per request, and one judgment is several requests, so a slow but alive judge could outlive the 35 s hook timeout in `hooks/hooks.json`. The shim denies the call at `ATBASH_HOOK_DEADLINE_MS` (default 28,000 ms; accepted range 1,000-30,000, so that node start-up and the bundle load always fit under the host timeout) unless the bundled hook has already written its decision. An invalid value denies every call rather than running without a deadline.
+- **Runtime failure.** A bundled hook that cannot load, throws asynchronously, or leaves a promise rejected exits with a deny (exit code 0) instead of exit code 1 and no output. The deny text is fixed; nothing from the failure is echoed to the host.
+- **Only the decision reaches standard output.** The bundled hook also carries library loggers whose sink is `console.log`; the shim diverts every standard-output chunk that is not a decision (a chunk that parses as JSON with a `hookSpecificOutput.permissionDecision` string; a log line that merely quotes one does not count) to standard error (the host transcript), so a stray log line can neither corrupt the decision nor count as one. Library diagnostics therefore appear in the transcript rather than on the decision channel; a closed standard error drops them. A bundle that wrote its decision but is still alive is ended once those bytes have drained.
+- **What the shim cannot close.** The deny is written synchronously, and if standard output cannot be written at all the shim exits with code 2 (a blocking error for the host) rather than 0 with an empty, permit-shaped output. A synchronous hang inside the bundle or the native SDK addon keeps the event loop from running the deadline timer at all; only the host timeout ends that, and that case is fail open at the host. A write straight to file descriptor 1 (not through `process.stdout`) is not intercepted; the JavaScript bundle has none, and the native SDK addon is assumed not to print to it. On POSIX a momentarily full pipe can make the synchronous deny write fail with `EAGAIN`; it is retried while bytes keep being accepted, for at most two seconds without one and never past two seconds after the configured deadline - and in no case past 32 s, two seconds after the largest accepted deadline (every write is tried once whatever the clock says, so a bundle that stalled the event loop past the give-up but under the host's timeout still puts its deny on a healthy standard output, and a first attempt that came that late keeps up to two seconds of retries of its own, bounded by that 32 s ceiling; a transport that dribbles the deny a byte at a time is not a stall and gets the whole deny; a write that reports zero bytes accepted is waited out like a refusal, and one that reports a count that is not a number, negative, or larger than what was offered is an error, never progress), then takes the exit-2 path: still a blocking error, delivered on standard error instead of as JSON.
 
 Tools that opt out of hooks are outside hook coverage, and plain model responses have no tool call to judge. Consequently, this plugin is a strong lifecycle guardrail, not a complete host security boundary.
 

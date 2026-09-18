@@ -113,6 +113,41 @@ export function sanitizeReason(reason: string, fallback: string): string {
   return safeReason.slice(0, 800);
 }
 
+/**
+ * The private channel between the bundled hook and the shipped shim (src/hook/shim.cjs). The shim
+ * installs a function under this well-known symbol before it loads the bundle; the bundle hands its
+ * decision to that function instead of writing it to stdout. stdout is then never a decision
+ * channel: whatever a library prints there is diverted to stderr by the shim, so no log line can be
+ * mistaken for the hook's answer. The symbol is registered (Symbol.for), so the bundle and the shim
+ * agree on it without sharing code.
+ */
+export const HOOK_ANSWER_CHANNEL: unique symbol = Symbol.for("atbash.hook.answer");
+
+export type HookAnswer = (output: string) => void;
+
+/**
+ * The channel as it was at load time. The shim installs it before the bundle loads, so under the
+ * shim it is always here; capturing it once means nothing that happens later in the process (a
+ * reassigned `globalThis`, another realm) can steer a decision into the bare-run fallback below,
+ * which under the shim would be a diverted log line rather than a decision.
+ */
+const channelAtLoad: unknown = (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[
+  HOOK_ANSWER_CHANNEL
+];
+
+/** Hand the decision to the shim when it is present; write it to stdout when running bare. */
+export function deliverDecision(output: string): void {
+  // The load-time capture or stdout, never a call-time lookup: a function installed under the
+  // symbol after load (a bare run with in-process code) must not receive the decision.
+  if (typeof channelAtLoad === "function") {
+    (channelAtLoad as HookAnswer)(output);
+    return;
+  }
+  if (output !== "") {
+    process.stdout.write(`${output}\n`);
+  }
+}
+
 export function serializeDeny(reason: string): string {
   const output: PreToolUseDenyOutput = {
     hookSpecificOutput: {
