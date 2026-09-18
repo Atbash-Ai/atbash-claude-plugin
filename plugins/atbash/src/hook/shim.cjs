@@ -41,7 +41,11 @@
 // mark can never be set, which lets a refused second load's deny be followed by the first
 // load's backstop deny - two objects, unparseable), exactly as it could call the
 // channel's permit or blank fs.writeSync - all of it is the same in-process control as patching
-// fs, and out of scope. A pipe write to a host that never reads blocks on Windows for any
+// fs, and out of scope; so is a descriptor layer that lies about the count in a way the shim
+// cannot tell from a partial write (writes the bytes and reports fewer, so the overlap is
+// written twice - unparseable, exit 0; or writes nothing and reports the full count - an empty
+// stdout, exit 0), where a count that is not an integer, negative or larger than the request IS
+// caught and ends 2. A pipe write to a host that never reads blocks on Windows for any
 // deny larger than the pipe's buffer, and nothing in-process can interrupt it (a blocked event
 // loop runs no watchdog; a blocked pool thread is joined by process.exit) - so the deny is bounded
 // in serialized BYTES (below) under the smallest buffer a host hands a hook, and the write always
@@ -108,8 +112,10 @@ const deadlineMs = resolveDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS);
 // The absolute give-up for the deny write: two seconds past the deadline this run was configured
 // with (the largest one when the value was invalid - a deny is on its way regardless), inside
 // the host's 35 s with room for the exit. A retry never starts after it; a first attempt does,
-// and a first attempt that came after it keeps one stall budget of retries (writeDecisionSync),
-// never past two seconds after the largest deadline.
+// and a first attempt that came after it keeps up to one stall budget of retries
+// (writeDecisionSync), never past 32 s of uptime - two seconds after the largest deadline, so
+// with the largest deadline configured the extension is inert, and a first attempt later than
+// 30 s gets only what is left before that ceiling (past it, a single syscall).
 const DELIVERY_GIVE_UP_MS = (deadlineMs ?? MAX_DEADLINE_MS) + 2000;
 
 // stdout is the host's decision channel, and only the shim writes to it. The bundled hook hands its

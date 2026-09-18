@@ -1648,7 +1648,9 @@ test("a bundle that blocks the event loop past the delivery give-up still gets i
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 32_300);\nmodule.exports = 1;\n",
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 32_300);\n" +
+        'require("node:fs").writeSync(2, "stalled-until=" + Math.ceil(process.uptime() * 1000) + "\\n");\n' +
+        "module.exports = 1;\n",
     );
   });
   try {
@@ -1664,6 +1666,16 @@ test("a bundle that blocks the event loop past the delivery give-up still gets i
     // bound only proves the stall happened at all: under WSL the wall clock of a 32.6 s stall
     // measured 31 862 ms (the guest's clock runs behind the host's), so it sits at 30 s.
     assert.ok(result.wallMs >= 30_000 && result.wallMs < 35_000, `stalled ${result.wallMs} ms`);
+    // The bundle's own clock is the one the shim's give-up is measured on, and it is immune to
+    // the guest/host skew above: the stall ended past the 32 s ceiling, so the deadline timer
+    // (30 s) could not have fired first - the deny on stdout is the exit backstop's.
+    const stalledUntil = Number(/stalled-until=(\d+)/.exec(result.stderr)?.[1]);
+    assert.ok(stalledUntil >= 32_000, `the bundle's clock read ${stalledUntil} ms after the stall`);
+    assert.match(
+      result.stdout,
+      /ended without a decision/,
+      "the deny must be the exit backstop's, not the deadline timer's",
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1794,7 +1806,10 @@ for (const [lie, label] of [
       assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
       assert.match(result.stderr, /could not be delivered/);
       assert.equal(result.stdout, "", "nothing was written, so nothing may be on stdout");
-      assert.ok(result.wallMs < 5_000, `an impossible count is refused at once, not after a budget: ${result.wallMs} ms`);
+      assert.ok(
+        result.wallMs < 5_000,
+        `an impossible count is refused at once, not after a budget: ${result.wallMs} ms`,
+      );
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
@@ -1840,7 +1855,10 @@ test("a transport that accepts zero bytes without an error is waited out like a 
     assert.match(result.stderr, /could not be delivered/);
     assert.equal(result.stdout, "", "the transport accepted nothing, so nothing may be on stdout");
     const calls = Number(/zero-byte calls=(\d+)/.exec(result.stderr)?.[1]);
-    assert.ok(Number.isInteger(calls) && calls > 1, `the preload did not report its calls: ${JSON.stringify(result.stderr)}`);
+    assert.ok(
+      Number.isInteger(calls) && calls > 1,
+      `the preload did not report its calls: ${JSON.stringify(result.stderr)}`,
+    );
     assert.ok(calls < 400, `${calls} write calls for two stall budgets: the retry did not wait`);
     // Two stall budgets (the answer's write and the blocking exit's), plus process start-up.
     assert.ok(result.wallMs >= 2_000 && result.wallMs < 9_000, `ended at ${result.wallMs} ms`);
