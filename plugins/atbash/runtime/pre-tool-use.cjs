@@ -107,7 +107,9 @@ function resolveDeadlineMs(raw) {
 const deadlineMs = resolveDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS);
 // The absolute give-up for the deny write: two seconds past the deadline this run was configured
 // with (the largest one when the value was invalid - a deny is on its way regardless), inside
-// the host's 35 s with room for the exit. A retry never starts after it; a first attempt does.
+// the host's 35 s with room for the exit. A retry never starts after it; a first attempt does,
+// and a first attempt that came after it keeps one stall budget of retries (writeDecisionSync),
+// never past two seconds after the largest deadline.
 const DELIVERY_GIVE_UP_MS = (deadlineMs ?? MAX_DEADLINE_MS) + 2000;
 
 // stdout is the host's decision channel, and only the shim writes to it. The bundled hook hands its
@@ -279,7 +281,17 @@ function writeDecisionSync(output) {
   const buffer = Buffer.from(output, "utf8");
   let offset = 0;
   let attempts = 0;
-  let lastProgressMs = Math.ceil(process.uptime() * 1000);
+  const firstAttemptMs = Math.ceil(process.uptime() * 1000);
+  // The retry window ends at the absolute give-up - or, for a first attempt that itself started
+  // after the give-up (a synchronous stall in the bundle that the host's timeout has not ended),
+  // one stall budget after that first attempt, so a partial first write gets the same chance to
+  // complete as any other. Never past two seconds after the largest deadline: the ceiling a
+  // registered hook timeout is measured against.
+  const giveUpMs = Math.min(
+    Math.max(DELIVERY_GIVE_UP_MS, firstAttemptMs + WRITE_STALL_BUDGET_MS),
+    MAX_DEADLINE_MS + 2000,
+  );
+  let lastProgressMs = firstAttemptMs;
   while (offset < buffer.length) {
     // Every write gets one attempt whatever the clock says: a bundle that blocked the event loop
     // past the give-up (a synchronous stall the host's timeout has not ended yet) must still put
@@ -287,7 +299,7 @@ function writeDecisionSync(output) {
     // bounds apply from the second turn on: they cap the retries, never the first syscall.
     if (attempts > 0) {
       const nowMs = Math.ceil(process.uptime() * 1000);
-      if (nowMs >= DELIVERY_GIVE_UP_MS || nowMs - lastProgressMs >= WRITE_STALL_BUDGET_MS) {
+      if (nowMs >= giveUpMs || nowMs - lastProgressMs >= WRITE_STALL_BUDGET_MS) {
         const error = new Error("the decision could not be written within its time budget");
         error.code = "ETIMEDOUT";
         throw error;
@@ -295,10 +307,26 @@ function writeDecisionSync(output) {
     }
     attempts += 1;
     try {
-      const written = writeSync(1, buffer, offset, buffer.length - offset);
-      if (written > 0) lastProgressMs = Math.ceil(process.uptime() * 1000);
-      offset += written;
-      stdoutBytes += written;
+      const remaining = buffer.length - offset;
+      const written = writeSync(1, buffer, offset, remaining);
+      // Only an integer count of bytes within what was offered is progress. fs.writeSync is the
+      // one captured at load, but the descriptor behind it is the host's; a count that is not a
+      // number, negative, or larger than the request would otherwise end the loop with the deny
+      // unwritten and the exit at 0 - an empty stdout, a Codex permit.
+      if (!Number.isInteger(written) || written < 0 || written > remaining) {
+        const error = new Error("the decision channel reported an impossible byte count");
+        error.code = "EIO";
+        throw error;
+      }
+      if (written > 0) {
+        lastProgressMs = Math.ceil(process.uptime() * 1000);
+        offset += written;
+        stdoutBytes += written;
+      } else {
+        // Nothing accepted and no error: a refusal in all but name. Waited out like EAGAIN, so a
+        // transport that answers 0 does not turn the stall budget into a hot loop of syscalls.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WRITE_RETRY_WAIT_MS);
+      }
     } catch (error) {
       if (!(error && error.code === "EAGAIN")) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WRITE_RETRY_WAIT_MS);

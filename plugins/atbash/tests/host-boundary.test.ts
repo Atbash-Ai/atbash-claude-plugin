@@ -1379,8 +1379,13 @@ test("a transport that accepts one byte per stall never holds the hook past the 
       /"permissionDecisionReason":"x{800}"/,
       "the whole deny cannot have reached the host",
     );
+    // The prefix that did reach the host is not a decision: not parseable at all, so no host can
+    // read a permit or a deny into it - the exit code is the whole answer.
+    assert.throws(() => JSON.parse(result.stdout), "the prefix on stdout parsed as a decision");
+    // The lower bound carries the meaning (the give-up, not the stall budget, ended it); the
+    // ceiling only has to sit under the host's timeout, so it leaves room for a loaded runner.
     assert.ok(
-      result.wallMs >= 7_000 && result.wallMs < 10_000,
+      result.wallMs >= 7_000 && result.wallMs < 12_000,
       `ended at ${result.wallMs} ms, not at the give-up`,
     );
   } finally {
@@ -1590,8 +1595,9 @@ test("a transport that accepts one byte per call without refusing never holds th
       /"permissionDecisionReason":"y{800}"/,
       "the whole deny cannot have been written",
     );
+    assert.throws(() => JSON.parse(result.stdout), "the prefix on stdout parsed as a decision");
     assert.ok(
-      result.wallMs >= 7_000 && result.wallMs < 10_000,
+      result.wallMs >= 7_000 && result.wallMs < 12_000,
       `ended at ${result.wallMs} ms, not at the give-up`,
     );
   } finally {
@@ -1642,7 +1648,7 @@ test("a bundle that blocks the event loop past the delivery give-up still gets i
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 32_600);\nmodule.exports = 1;\n",
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 32_300);\nmodule.exports = 1;\n",
     );
   });
   try {
@@ -1654,7 +1660,10 @@ test("a bundle that blocks the event loop past the delivery give-up still gets i
     assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
     assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
     assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
-    assert.ok(result.wallMs >= 32_000 && result.wallMs < 35_000, `stalled ${result.wallMs} ms`);
+    // The stall outlives the give-up (32 s) and the ceiling is the host's 35 s timeout. The lower
+    // bound only proves the stall happened at all: under WSL the wall clock of a 32.6 s stall
+    // measured 31 862 ms (the guest's clock runs behind the host's), so it sits at 30 s.
+    assert.ok(result.wallMs >= 30_000 && result.wallMs < 35_000, `stalled ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1738,6 +1747,103 @@ test("a transport that accepts the deny slowly but steadily still gets the whole
     assert.match(result.stdout, /a slow but steady transport/);
     assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
     assert.ok(result.wallMs >= 3_000 && result.wallMs < 30_000, `took ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+for (const [lie, label] of [
+  ["Number.NaN", "not a number"],
+  ["length + 1", "more bytes than were offered"],
+  ["-1", "a negative count"],
+] as const) {
+  test(`a transport that reports ${label} accepted is an error, never a delivered decision`, async () => {
+    // fs.writeSync is captured at load, but what the captured function does is still the
+    // process's: a replaced descriptor layer (here a preload) that writes nothing and answers a
+    // count the shim did not ask for must not end the delivery loop as if the deny were on
+    // stdout. Before the count was checked, NaN or an oversized count ended the loop, the shim
+    // marked the decision delivered and exited 0 with an EMPTY stdout - a Codex permit. Now an
+    // impossible count is an error like any other: exit 2, the reason on stderr, nothing on
+    // stdout.
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(
+        join(d, "decoy.cjs"),
+        [
+          'const fs = require("node:fs");',
+          "const original = fs.writeSync;",
+          "fs.writeSync = function (fd, buffer, offset, length) {",
+          "  if (fd !== 1) return original.apply(this, arguments);",
+          `  return ${lie};`,
+          "};",
+        ].join("\n") + "\n",
+      );
+      writeFileSync(
+        join(d, "pre-tool-use-main.cjs"),
+        `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a lying transport" } }));\n`,
+      );
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        {
+          ATBASH_HOOK_DEADLINE_MS: "6000",
+          NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+        },
+        dir,
+      );
+      assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
+      assert.match(result.stderr, /could not be delivered/);
+      assert.equal(result.stdout, "", "nothing was written, so nothing may be on stdout");
+      assert.ok(result.wallMs < 5_000, `an impossible count is refused at once, not after a budget: ${result.wallMs} ms`);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+}
+
+test("a transport that accepts zero bytes without an error is waited out like a refusal, not spun on", async () => {
+  // A write that returns 0 and no error is a refusal in all but name. It still ends at the stall
+  // budget with exit 2 (nothing accepted for two seconds), but each turn now waits the retry
+  // interval instead of issuing the next syscall at once: two stall budgets at 25 ms per turn
+  // are at most a few hundred calls, where the hot loop made tens of thousands. The preload
+  // counts the calls and reports them on stderr as the process ends.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "let calls = 0;",
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        "  if (fd !== 1) return original.apply(this, arguments);",
+        "  calls += 1;",
+        "  return 0;",
+        "};",
+        'process.on("exit", () => { original.call(fs, 2, "zero-byte calls=" + calls + "\\n"); });',
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a transport that accepts nothing" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stderr, /could not be delivered/);
+    assert.equal(result.stdout, "", "the transport accepted nothing, so nothing may be on stdout");
+    const calls = Number(/zero-byte calls=(\d+)/.exec(result.stderr)?.[1]);
+    assert.ok(Number.isInteger(calls) && calls > 1, `the preload did not report its calls: ${JSON.stringify(result.stderr)}`);
+    assert.ok(calls < 400, `${calls} write calls for two stall budgets: the retry did not wait`);
+    // Two stall budgets (the answer's write and the blocking exit's), plus process start-up.
+    assert.ok(result.wallMs >= 2_000 && result.wallMs < 9_000, `ended at ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
