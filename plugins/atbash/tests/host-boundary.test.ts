@@ -102,7 +102,9 @@ interface RunResult {
 
 function runHook(entry: string, env: NodeJS.ProcessEnv, cwd = process.cwd()): Promise<RunResult> {
   const home = mkdtempSync(join(tmpdir(), "atbash-hook-home-"));
-  const started = Date.now();
+  // Monotonic, not Date.now(): every timing bound below is measured against this, and a wall
+  // clock that steps (WSL2 resyncing to the host, NTP) made a 1.5 s deadline deny read 518 ms once.
+  const started = process.hrtime.bigint();
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [entry], {
       cwd,
@@ -124,7 +126,7 @@ function runHook(entry: string, env: NodeJS.ProcessEnv, cwd = process.cwd()): Pr
     child.stdin.end(JSON.stringify(makeHookInput()));
     child.on("close", (code) => {
       rmSync(home, { force: true, recursive: true });
-      resolve({ code, stdout, stderr, wallMs: Date.now() - started });
+      resolve({ code, stdout, stderr, wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n) });
     });
   });
 }
