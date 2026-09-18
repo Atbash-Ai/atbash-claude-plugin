@@ -126,7 +126,12 @@ function runHook(entry: string, env: NodeJS.ProcessEnv, cwd = process.cwd()): Pr
     child.stdin.end(JSON.stringify(makeHookInput()));
     child.on("close", (code) => {
       rmSync(home, { force: true, recursive: true });
-      resolve({ code, stdout, stderr, wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n) });
+      resolve({
+        code,
+        stdout,
+        stderr,
+        wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+      });
     });
   });
 }
