@@ -8,11 +8,16 @@ import test from "node:test";
 import { generateKeyDeliveryPair } from "../src/control/keys.js";
 import {
   parseProposalActions,
+  validateProposalActionsForPurpose,
   type ExecutionView,
   type ProposalView,
 } from "../src/control/protocol.js";
 import { ControlStore, type PendingJob } from "../src/control/store.js";
-import { activateCompletedJob, startControlJob } from "../src/control/workflow.js";
+import {
+  activateCompletedJob,
+  cancelControlJob,
+  startControlJob,
+} from "../src/control/workflow.js";
 
 test("plan parser permits only the bounded dashboard action vocabulary", () => {
   const actions = parseProposalActions({
@@ -47,6 +52,87 @@ test("plan parser permits only the bounded dashboard action vocabulary", () => {
         actions: [{ type: "create_account", network: "public", privateKey: "secret" }],
       }),
     /unknown fields/,
+  );
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [
+          { type: "create_account", network: "public" },
+          { type: "create_account", network: "public" },
+        ],
+      }),
+    /at most one account/,
+  );
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [
+          {
+            type: "create_agent",
+            network: "private",
+            organization: "Acme",
+            name: "Claude",
+            purpose: "Review code",
+            risk: "medium",
+            keySource: "generate_in_browser",
+          },
+          { type: "create_account", network: "public" },
+        ],
+      }),
+    /same network/,
+  );
+});
+
+test("plans are constrained to the lifecycle supported by each authorization purpose", () => {
+  const createAgent = parseProposalActions({
+    actions: [
+      {
+        type: "create_agent",
+        network: "public",
+        organization: "Acme",
+        name: "Claude",
+        purpose: "Review code",
+        risk: "medium",
+        keySource: "generate_in_browser",
+      },
+    ],
+  });
+  assert.doesNotThrow(() => validateProposalActionsForPurpose(createAgent, "onboard"));
+
+  const localAgent = parseProposalActions({
+    actions: [
+      {
+        type: "create_agent",
+        network: "public",
+        organization: "Acme",
+        name: "Claude",
+        purpose: "Review code",
+        risk: "medium",
+        keySource: "local_public_key",
+        agentPubkey: `02${"22".repeat(32)}`,
+      },
+    ],
+  });
+  assert.throws(
+    () => validateProposalActionsForPurpose(localAgent, "onboard"),
+    /browser-generated agent/,
+  );
+
+  const updateAgent = parseProposalActions({
+    actions: [
+      {
+        type: "update_agent",
+        network: "public",
+        organization: "Acme",
+        agentPubkey: `02${"22".repeat(32)}`,
+        changes: { purpose: "Review code" },
+      },
+    ],
+  });
+  assert.doesNotThrow(() => validateProposalActionsForPurpose(updateAgent, "manage"));
+  assert.throws(
+    () => validateProposalActionsForPurpose(createAgent, "manage"),
+    /exactly one agent update/,
   );
 });
 
@@ -151,4 +237,122 @@ test("completed browser execution activates a host profile and destroys transien
   assert.equal(selected?.credential.agentPrivateKey, agentPrivateKey);
   assert.equal(consumedJob.sessionSecret, "consumed-after-activation");
   assert.equal(consumedJob.keyDeliveryPrivateKeyPem, "destroyed-after-activation");
+});
+
+test("activation rejects an execution result that names a different delivered agent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atbash-activate-mismatch-"));
+  const store = new ControlStore(root);
+  const pair = generateKeyDeliveryPair();
+  const deliveredPubkey = `02${"44".repeat(32)}`;
+  const resultPubkey = `03${"55".repeat(32)}`;
+  const sessionId = "session-id";
+  const proposalId = "proposal-id";
+  const label = `atbash-plugin-key:v1:${sessionId}:${proposalId}:${deliveredPubkey}`;
+  const ciphertext = publicEncrypt(
+    {
+      key: createPublicKey({ key: pair.publicKey as unknown as JsonWebKey, format: "jwk" }),
+      oaepHash: "sha256",
+      oaepLabel: Buffer.from(label),
+    },
+    Buffer.from(
+      JSON.stringify({
+        version: 1,
+        agentPubkey: deliveredPubkey,
+        agentPrivateKey: "33".repeat(32),
+      }),
+    ),
+  ).toString("base64url");
+  const job: PendingJob = {
+    schemaVersion: 1,
+    jobId: "job-mismatch",
+    host: "claude",
+    purpose: "onboard",
+    serviceOrigin: "https://atbash.ai",
+    sessionId,
+    sessionSecret: "S".repeat(43),
+    verificationCode: "ABCD-EFGH",
+    verificationUri: "https://atbash.ai/connect/plugin",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    pollIntervalMs: 2_000,
+    keyDeliveryPrivateKeyPem: pair.privateKeyPem,
+  };
+  const proposal: ProposalView = {
+    id: proposalId,
+    sessionId,
+    revision: 1,
+    proposalHash: "a".repeat(64),
+    actions: [
+      {
+        type: "create_agent",
+        network: "public",
+        organization: "Acme",
+        name: "Claude",
+        purpose: "Review code",
+        risk: "medium",
+        keySource: "generate_in_browser",
+      },
+    ],
+    status: "consumed",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    createdAt: "2099-01-01T00:00:00.000Z",
+  };
+  const execution: ExecutionView = {
+    id: "execution-id",
+    sessionId,
+    proposalId,
+    proposalHash: proposal.proposalHash,
+    status: "completed",
+    results: [
+      { actionIndex: 0, type: "create_agent", status: "completed", agentPubkey: resultPubkey },
+    ],
+    keyDeliveries: [
+      {
+        version: 1,
+        algorithm: "RSA-OAEP-256",
+        ciphertext,
+        label,
+        agentPubkey: deliveredPubkey,
+      },
+    ],
+    claimedAt: "2099-01-01T00:00:00.000Z",
+    completedAt: "2099-01-01T00:01:00.000Z",
+  };
+
+  await assert.rejects(
+    activateCompletedJob(job, proposal, execution, store),
+    /different agent key/,
+  );
+  assert.equal(await store.selectedProfile("claude"), null);
+});
+
+test("cancelling a control job removes its local pending secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atbash-cancel-"));
+  const store = new ControlStore(root);
+  const job: PendingJob = {
+    schemaVersion: 1,
+    jobId: "job-cancel",
+    host: "claude",
+    purpose: "onboard",
+    serviceOrigin: "https://atbash.ai",
+    sessionId: "session-id",
+    sessionSecret: "S".repeat(43),
+    verificationCode: "ABCD-EFGH",
+    verificationUri: "https://atbash.ai/connect/plugin",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    pollIntervalMs: 2_000,
+    keyDeliveryPrivateKeyPem: "pending-private-key",
+  };
+  await store.saveJob(job);
+  const calls: unknown[][] = [];
+  const client = {
+    async cancelSession(...args: unknown[]) {
+      calls.push(args);
+    },
+  };
+
+  const result = await cancelControlJob(job.jobId, store, client as never);
+
+  assert.equal(result.status, "cancelled");
+  assert.deepEqual(calls, [[job.sessionId, job.sessionSecret]]);
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
 });

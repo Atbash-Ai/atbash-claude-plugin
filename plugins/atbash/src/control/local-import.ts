@@ -60,12 +60,13 @@ export async function startLocalImportServer(input: {
       let size = 0;
       for await (const chunk of request) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        chunks.push(bytes);
         size += bytes.length;
         if (size > MAX_BODY_BYTES) {
+          for (const buffered of chunks) buffered.fill(0);
           response.writeHead(413).end("Request too large");
           return;
         }
-        chunks.push(bytes);
       }
       const body = Buffer.concat(chunks);
       try {

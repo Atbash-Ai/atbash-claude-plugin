@@ -5,6 +5,7 @@ import { ControlClient, resolveControlOrigin } from "./client.js";
 import { decryptAgentKey, generateKeyDeliveryPair } from "./keys.js";
 import {
   parseProposalActions,
+  validateProposalActionsForPurpose,
   type ControlHost,
   type ControlPurpose,
   type ExecutionView,
@@ -157,6 +158,7 @@ export async function submitControlPlan(
   if (!session.identityBound)
     throw new Error("Open the verification URL and verify the wallet before preparing a plan.");
   const actions = parseProposalActions(JSON.parse(await readFile(inputPath, "utf8")));
+  validateProposalActionsForPurpose(actions, job.purpose);
   const proposal = await client.submitProposal(job.sessionId, job.sessionSecret, actions);
   job.proposalId = proposal.id;
   await store.saveJob(job);
@@ -181,7 +183,14 @@ export async function activateCompletedJob(
   const successful = successfulGenerated[0];
   if (!delivery || !successful)
     throw new Error("The completed execution is missing its agent key result.");
+  const resultPubkey = successful.agentPubkey;
+  if (!resultPubkey) throw new Error("The completed execution is missing its agent public key.");
   const decrypted = decryptAgentKey(delivery, job.keyDeliveryPrivateKeyPem);
+  if (
+    resultPubkey.toLowerCase() !== delivery.agentPubkey.toLowerCase() ||
+    resultPubkey.toLowerCase() !== decrypted.agentPubkey
+  )
+    throw new Error("The completed execution returned a different agent key than it delivered.");
   const action = proposal.actions[successful.actionIndex];
   if (!action || action.type !== "create_agent" || action.keySource !== "generate_in_browser")
     throw new Error("The delivered key does not match the approved agent action.");
@@ -264,9 +273,10 @@ export async function continueControlJob(
 export async function cancelControlJob(
   jobId: string,
   store = new ControlStore(),
+  client?: ControlClient,
 ): Promise<PublicJobView> {
   const job = await store.readJob(jobId);
-  await clientFor(job).cancelSession(job.sessionId, job.sessionSecret);
+  await (client ?? clientFor(job)).cancelSession(job.sessionId, job.sessionSecret);
   const session: SessionView = {
     id: job.sessionId,
     host: job.host,
@@ -276,5 +286,7 @@ export async function cancelControlJob(
     identityBound: false,
     expiresAt: job.expiresAt,
   };
-  return view({ job, session, message: "The pending authorization was cancelled." });
+  const result = view({ job, session, message: "The pending authorization was cancelled." });
+  await store.removeJob(job.jobId);
+  return result;
 }

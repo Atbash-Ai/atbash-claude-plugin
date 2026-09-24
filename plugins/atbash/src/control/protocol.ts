@@ -279,7 +279,49 @@ export function parseProposalActions(value: unknown): ProposalAction[] {
     envelope.actions.length > 10
   )
     throw new Error("Plan must contain between 1 and 10 actions.");
-  return envelope.actions.map(parseAction);
+  const actions = envelope.actions.map(parseAction);
+  if (actions.filter((action) => action.type === "create_account").length > 1)
+    throw new Error("A plan can create at most one account.");
+  if (actions.filter((action) => action.type === "create_organization").length > 1)
+    throw new Error("A plan can create at most one organization.");
+  if (actions.filter((action) => action.type === "activate_free_plan").length > 1)
+    throw new Error("A plan can activate the Free plan at most once.");
+  if (new Set(actions.map((action) => action.network)).size !== 1)
+    throw new Error("All plan actions must target the same network.");
+  const rank: Record<ProposalAction["type"], number> = {
+    create_account: 0,
+    create_organization: 1,
+    activate_free_plan: 2,
+    create_agent: 3,
+    update_agent: 3,
+  };
+  if (
+    actions.some((action, index) => index > 0 && rank[action.type] < rank[actions[index - 1]!.type])
+  )
+    throw new Error("Plan actions must follow onboarding execution order.");
+  return actions;
+}
+
+export function validateProposalActionsForPurpose(
+  actions: ProposalAction[],
+  purpose: ControlPurpose,
+): void {
+  if (purpose === "onboard") {
+    const createdAgents = actions.filter((action) => action.type === "create_agent");
+    if (
+      createdAgents.length !== 1 ||
+      createdAgents[0]?.type !== "create_agent" ||
+      createdAgents[0].keySource !== "generate_in_browser" ||
+      actions.some((action) => action.type === "update_agent")
+    ) {
+      throw new Error(
+        "An onboarding plan must create exactly one browser-generated agent and cannot update agents.",
+      );
+    }
+    return;
+  }
+  if (actions.length !== 1 || actions[0]?.type !== "update_agent")
+    throw new Error("A management plan must contain exactly one agent update.");
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {

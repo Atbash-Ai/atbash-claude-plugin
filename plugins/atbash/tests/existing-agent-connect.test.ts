@@ -92,6 +92,16 @@ test("loopback import connects a wallet-owned agent without sending its private 
   });
   assert.equal(rejected.status, 403);
 
+  const oversized = await fetch(local.localUri, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: new URL(local.localUri).origin,
+    },
+    body: "privateKey=" + "a".repeat(8_192),
+  });
+  assert.equal(oversized.status, 413);
+
   const accepted = await fetch(local.localUri, {
     method: "POST",
     headers: {
