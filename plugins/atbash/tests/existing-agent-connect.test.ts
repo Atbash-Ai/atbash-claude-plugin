@@ -15,7 +15,7 @@ test("loopback import connects a wallet-owned agent without sending its private 
   const job: PendingJob = {
     schemaVersion: 1,
     jobId: "existing-job",
-    host: "codex",
+    host: "claude",
     purpose: "onboard",
     serviceOrigin: "https://atbash.ai",
     sessionId: "session-id",
@@ -33,9 +33,9 @@ test("loopback import connects a wallet-owned agent without sending its private 
       calls.push(args);
       return {
         id: job.sessionId,
-        host: "codex" as const,
+        host: "claude" as const,
         purpose: "onboard" as const,
-        clientVersion: "0.4.0",
+        clientVersion: "0.5.0",
         status: "identity_bound" as const,
         identityBound: true,
         expiresAt: job.expiresAt,
@@ -104,7 +104,7 @@ test("loopback import connects a wallet-owned agent without sending its private 
   const profile = await local.completion;
   assert.equal(profile.organization, "Acme");
   assert.equal(
-    (await store.selectedProfile("codex"))?.credential.agentPrivateKey,
+    (await store.selectedProfile("claude"))?.credential.agentPrivateKey,
     keypair.priv_key,
   );
   assert.doesNotMatch(JSON.stringify(calls), new RegExp(keypair.priv_key, "i"));

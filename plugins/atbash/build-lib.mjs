@@ -20,6 +20,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
       index: "src/index.ts",
       "pre-tool-use": "src/pre-tool-use.ts",
       status: "src/status.ts",
+      control: "src/control.ts",
     },
     format: "cjs",
     legalComments: "none",
@@ -54,7 +55,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     target: "node22",
   });
 
-  for (const entry of ["index", "pre-tool-use", "status"]) {
+  for (const entry of ["index", "pre-tool-use", "status", "control"]) {
     const outputPath = join(outdir, `${entry}.cjs`);
     const source = await readFile(outputPath, "utf8");
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");

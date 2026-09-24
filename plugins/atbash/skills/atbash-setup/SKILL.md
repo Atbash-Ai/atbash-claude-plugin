@@ -1,94 +1,55 @@
 ---
 name: atbash-setup
-description: Configure, activate, verify, troubleshoot, or rotate credentials for the Atbash Safety plugin. Use when a user asks how to set up Atbash, enable or disable its hook, configure an organization or private key, check agent status, understand ALLOW/HOLD/BLOCK behavior, or fix configuration, registration, jailed-agent, endpoint, or service errors.
+description: Set up, connect, verify, troubleshoot, or switch the Atbash Safety profile for Claude Code. Use when the user wants to sign up for Atbash, connect an existing Atbash agent, create a new agent, check setup progress, or repair local plugin configuration.
 ---
 
 # Atbash Setup
 
-Keep Atbash enforcement separate from this skill. The plugin's catch-all `PreToolUse` hook automatically judges supported tool calls whenever the plugin and its hook are enabled; do not decide case by case whether to invoke Atbash.
+Use the bundled control helper for onboarding. Keep private keys outside the conversation and outside tool arguments. The catch-all `PreToolUse` hook continues to enforce Atbash independently of this skill.
 
-## Protect credentials
+## Start or resume setup
 
-- Never ask the user to paste, upload, or reveal an Atbash private key in chat.
-- Never read, print, log, inspect, or transmit the user's Atbash config file.
-- Never place a private key in a prompt, tool argument, command-line argument, shell history, manifest, repository file, or `.env` file.
-- Ask the user to edit the config locally themselves. If a private key has appeared in chat, logs, or version control, advise the user to revoke or rotate it before continuing.
-- Explain that the SDK uses the private key locally for agent identity and cryptographic signing and derives the public key locally. The configuration file remains on the user's machine; the plugin does not operate a credential-holding MCP server.
+Run the helper through this skill's `scripts/atbash-control.mjs` launcher:
 
-## Configure before enabling the hook
-
-Tell the user to create the SDK config outside the Claude Code conversation before enabling the plugin. The organization name is required and must exactly match the organization where the agent's derived public key is onboarded.
-
-Use this JSON shape at `~/.config/atbash/config.json` on macOS/Linux or `%USERPROFILE%\.config\atbash\config.json` on Windows:
-
-```json
-{
-  "agentKey": "<your-agent-private-key>",
-  "orgName": "<your-exact-organization-name>"
-}
+```text
+node <skill-directory>/scripts/atbash-control.mjs setup start --host claude
 ```
 
-Give the user these manual setup commands without executing them or asking for their resulting file contents.
+The result contains a public `verificationUri`, verification code, and opaque job ID. Show the URL and code to the user and ask them to complete wallet verification in **Connect Atbash**. Never expose files under `~/.config/atbash/pending`, `credentials`, `profiles`, or `hosts`.
 
-macOS/Linux:
+Inspect progress with `setup inspect <job-id>` through the same launcher. Follow `nextAction`:
 
-```bash
-mkdir -p ~/.config/atbash
-chmod 700 ~/.config/atbash
-${EDITOR:-vi} ~/.config/atbash/config.json
-chmod 600 ~/.config/atbash/config.json
-```
+- `OPEN_BROWSER`: the user completes sign-in and wallet verification in the provided page.
+- `PREPARE_PLAN`: use discovery to create a non-secret plan JSON file containing only `actions`, then run `setup plan <job-id> --input <path>`.
+- `REVIEW_IN_BROWSER`: the user reviews and signs the exact proposal in Connect Atbash. Do not approve it for them.
+- `WAIT`: inspect again after the returned poll interval; do not poll after expiry.
+- `ACTIVATE`: run `setup continue <job-id>` to decrypt the delivered key locally and activate the profile.
+- `RECOVER`: report completed and failed steps. Any replacement mutation requires a new setup or management session and approval.
+- `DONE`: run status, then verify one harmless host tool call.
 
-Windows PowerShell:
+For a new public setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, purposes, risks, or agent names.
 
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.config\atbash"
-notepad "$HOME\.config\atbash\config.json"
-```
+## Connect an existing agent
 
-Environment variables `ATBASH_AGENT_KEY` and `ATBASH_ORG_NAME` are a session-only alternative. Prefer the config file for the Claude Code desktop app because environment changes do not reach an already-running desktop process.
+After wallet verification and discovery, run `profile connect <job-id>` through the launcher. Show the returned loopback `localUri` to the user. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
 
-If the already-enabled fail-closed hook prevents setup actions, tell the user to disable the Atbash plugin, complete configuration manually outside Claude Code, restart Claude Code, and re-enable the plugin.
+Never ask the user to paste, upload, reveal, or dictate a private key. Never read or print credential files. Never put a key in a plan, prompt, environment assignment, command-line argument, committed file, or shell history.
 
-## Activate or deactivate
+## Profiles and legacy compatibility
 
-Treat Atbash as active only when all of these are true:
+List profiles with `profile list --host claude`, select one with `profile switch --host claude --profile <id>`, or disconnect the host mapping with `profile disconnect --host claude`. Disconnecting retains the credential; it does not delete or revoke the on-chain agent.
 
-1. The `atbash` plugin is installed and enabled.
-2. The Atbash `PreToolUse` hook is loaded; the user can review it in `/hooks`.
-3. Local Atbash credentials and organization configuration are valid.
+If there is no selected profile, the hook keeps the legacy SDK configuration behavior. If `ATBASH_AGENT_KEY` or `ATBASH_ORG_NAME` conflicts with a selected profile, report the conflict and ask the user to remove or correct the override locally. Never inspect the conflicting key.
 
-To deactivate Atbash, tell the user to disable or uninstall the plugin from the `/plugin` menu (or `claude plugin disable atbash`). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
+If an already-enabled fail-closed hook blocks setup actions, tell the user to disable the Atbash plugin, run the bundled launcher once outside the guarded session, restart Claude Code, and re-enable the plugin. Do not describe this as bypassing an individual verdict.
 
 ## Verify and troubleshoot
 
-After configuration and activation, use a harmless tool call such as listing the current directory to verify that the hook allows an ordinary action. Do not use destructive or privileged commands as tests.
-
-If working from a source checkout, the user can run:
-
-```bash
-npm run status --workspace @atbash/claude-plugin
-```
-
-Interpret status results as follows:
-
-- `ready`: configuration, registration, and service access are working.
-- `configuration_error`: correct the local key, exact organization name, or optional endpoint settings.
-- `agent_not_registered`: onboard the public key derived from this private key into the named organization.
-- `agent_jailed`: resolve the agent state in Atbash before retrying.
-- `service_error`: check connectivity, endpoint/chain settings, and Atbash service availability.
-
-Never diagnose key mismatch by asking to inspect the private key. Ask the user to compare the locally derived public key with the public key registered in the Atbash dashboard.
-
-## Explain verdicts
+Use a harmless tool call such as listing the current directory to verify activation. Status reports `ready`, `configuration_error`, `agent_not_registered`, `agent_jailed`, or `service_error`; it never prints the private key.
 
 - `ALLOW` with `allow: true`: Claude Code continues the pending tool call.
-- `HOLD`: Claude Code blocks this attempt pending operator review. After approval in Atbash, the user must explicitly retry the original request.
+- `HOLD`: Claude Code blocks this attempt pending operator review; the user explicitly retries after approval.
 - `BLOCK`: Claude Code blocks the tool call.
-- `ERROR`, timeout, malformed output, missing configuration, or inconsistent output: Claude Code blocks the tool call because the hook is fail closed.
+- `ERROR`, timeout, malformed output, missing configuration, or inconsistent output: Claude Code blocks because the hook is fail closed.
 
-Do not claim that the plugin covers plain text responses, hosted tools that opt out of hooks, or every possible Claude Code capability. It guards tool calls exposed to the `PreToolUse` lifecycle hook.
-
-## Rotate a key
-
-Ask the user to rotate or revoke the old key in Atbash, replace `agentKey` in the local config themselves, verify the derived public key is onboarded to the exact organization, and start a new Claude Code session. Never handle either key value in the conversation.
+Do not claim coverage for plain text responses or capabilities outside Claude Code's `PreToolUse` lifecycle hook.

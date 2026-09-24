@@ -15,7 +15,7 @@ import {
 } from "./protocol.js";
 import { ControlStore, type AgentCredential, type AgentProfile, type PendingJob } from "./store.js";
 
-export const CONTROL_CLIENT_VERSION = "0.4.0";
+export const CONTROL_CLIENT_VERSION = "0.5.0";
 
 function publicExecution(execution: ExecutionView): NonNullable<PublicJobView["execution"]> {
   const { keyDeliveries, ...safe } = execution;

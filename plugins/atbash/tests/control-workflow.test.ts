@@ -29,7 +29,7 @@ test("plan parser permits only the bounded dashboard action vocabulary", () => {
         type: "create_agent",
         network: "public",
         organization: "Acme",
-        name: "Codex",
+        name: "Claude",
         purpose: "Review code",
         risk: "medium",
         keySource: "generate_in_browser",
@@ -65,7 +65,7 @@ test("start returns only public pairing data and persists helper secrets locally
     }),
   };
   const output = await startControlJob({
-    host: "codex",
+    host: "claude",
     purpose: "onboard",
     serviceOrigin: "https://atbash.ai",
     store,
@@ -99,7 +99,7 @@ test("completed browser execution activates a host profile and destroys transien
   const job: PendingJob = {
     schemaVersion: 1,
     jobId: "job-activate",
-    host: "codex",
+    host: "claude",
     purpose: "onboard",
     serviceOrigin: "https://atbash.ai",
     sessionId,
@@ -121,7 +121,7 @@ test("completed browser execution activates a host profile and destroys transien
         type: "create_agent",
         network: "public",
         organization: "Acme",
-        name: "Codex",
+        name: "Claude",
         purpose: "Review code",
         risk: "medium",
         keySource: "generate_in_browser",
@@ -144,9 +144,9 @@ test("completed browser execution activates a host profile and destroys transien
   };
 
   const profileId = await activateCompletedJob(job, proposal, execution, store);
-  const selected = await store.selectedProfile("codex");
+  const selected = await store.selectedProfile("claude");
   const consumedJob = await store.readJob(job.jobId);
-  assert.equal(profileId, "codex-job-activate");
+  assert.equal(profileId, "claude-job-activate");
   assert.equal(selected?.profile.organization, "Acme");
   assert.equal(selected?.credential.agentPrivateKey, agentPrivateKey);
   assert.equal(consumedJob.sessionSecret, "consumed-after-activation");

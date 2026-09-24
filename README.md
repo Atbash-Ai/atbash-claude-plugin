@@ -8,7 +8,6 @@ While active, the guard is fail closed. A missing key, invalid configuration, ne
 
 - A supported 64-bit platform: Apple silicon macOS, glibc Linux on x64/arm64, or Windows x64
 - Node.js 22.13.0 or newer on `PATH` for the hook process
-- A configured and onboarded Atbash agent
 - A Claude Code version with plugin support (1.0.33 or newer)
 
 ## Install from the Git marketplace
@@ -29,7 +28,7 @@ Or inside a Claude Code session:
 /plugin install atbash@atbash-ai
 ```
 
-Configure Atbash locally before enabling the plugin. The guard intentionally fails closed when configuration is missing, so an unconfigured install denies tool calls instead of silently allowing them.
+If Atbash is not configured yet, leave the fail-closed hook disabled until the guided setup has activated a local profile.
 
 To fetch a newer marketplace revision and update the installed plugin:
 
@@ -38,7 +37,15 @@ claude plugin marketplace update atbash-ai
 claude plugin update atbash@atbash-ai
 ```
 
-## Configure Atbash
+## Set up from Claude Code
+
+Invoke the `atbash-setup` skill and ask Claude Code to start Atbash setup. The bundled helper creates a short-lived pairing request and gives you a **Connect Atbash** URL and matching code. In that page you sign in, verify your wallet, review the exact account, organization, subscription, or agent changes, and approve them once.
+
+For a new agent, the browser generates the agent key and encrypts it directly to a temporary public key created by the local helper. Only the local helper can decrypt it, and it stores the resulting Claude profile under `~/.config/atbash/` with restricted permissions. For an existing agent, the helper opens a loopback-only key form and matches the locally derived public key against agents owned by the verified wallet. The private key never goes to the dashboard or the conversation.
+
+Use the `atbash-manage` skill for later name, purpose, risk, or active-state changes. Each management request creates a fresh session and requires a new exact approval.
+
+## Legacy manual configuration
 
 The plugin calls `Atbash.fromConfig()`. The SDK resolves values in this order: explicit SDK option, environment variable, then `~/.config/atbash/config.json`.
 
@@ -54,7 +61,7 @@ The plugin calls `Atbash.fromConfig()`. The SDK resolves values in this order: e
 
 Only the private key is configured. The SDK validates it, uses it locally for agent identity and cryptographic signing, and derives the corresponding public key locally. The public key must already be onboarded to the named organization in the [Atbash agent dashboard](https://atbash.ai/risk-engine/agents), but it should not be added to the plugin configuration. The plugin never uploads the config file or private key to an MCP service.
 
-### Persistent configuration
+### Persistent legacy configuration
 
 This is the recommended setup because hook processes can read it regardless of how Claude Code was launched. Create `~/.config/atbash/config.json` on macOS/Linux, or `%USERPROFILE%\.config\atbash\config.json` on Windows:
 
@@ -121,7 +128,7 @@ The command reports `ready`, `configuration_error`, `agent_not_registered`, `age
 
 After installation and configuration, start a new Claude Code session. The plugin's `PreToolUse` hook loads automatically while the plugin is enabled; review it any time with `/hooks`.
 
-Invoke the `atbash-setup` skill whenever you want guided setup, status interpretation, key-rotation guidance, or an explanation of Atbash verdicts. The skill never decides whether a tool call should be judged; the hook automatically checks every supported call while active.
+Invoke the `atbash-setup` skill whenever you want guided setup, status interpretation, profile switching, or an explanation of Atbash verdicts. The skill never decides whether a tool call should be judged; the hook automatically checks every supported call while active.
 
 Test activation with a harmless request such as "Run `pwd`, then list the files in the current repository." An ordinary allowed action should execute after an Atbash `ALLOW` decision. Do not use destructive or privileged commands as activation tests.
 
@@ -170,6 +177,6 @@ Repository layout:
 
 - `.claude-plugin/marketplace.json` — Git-backed Claude Code marketplace catalog
 - `plugins/atbash/.claude-plugin/plugin.json` — Claude Code plugin manifest
-- `plugins/atbash/` — automatic hook, setup skill, SDK adapter, diagnostics, tests, and committed universal runtime
+- `plugins/atbash/` — automatic hook, setup and management skills, local control helper, SDK adapter, diagnostics, tests, and committed universal runtime
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development rules and [SECURITY.md](./SECURITY.md) for vulnerability reporting.

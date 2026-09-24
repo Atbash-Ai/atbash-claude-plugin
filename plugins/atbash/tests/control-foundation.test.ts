@@ -54,7 +54,7 @@ test("pending secrets are stored in a restricted local file", async () => {
   const job: PendingJob = {
     schemaVersion: 1,
     jobId: "job-1",
-    host: "codex",
+    host: "claude",
     purpose: "onboard",
     serviceOrigin: "https://atbash.ai",
     sessionId: "session-id",
@@ -81,9 +81,9 @@ test("control client keeps the bearer out of URLs and sends it only in authoriza
     return new Response(
       JSON.stringify({
         id: "session-id",
-        host: "codex",
+        host: "claude",
         purpose: "onboard",
-        clientVersion: "0.4.0",
+        clientVersion: "0.5.0",
         status: "pending_identity",
         identityBound: false,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
