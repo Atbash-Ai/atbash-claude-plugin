@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import type { ControlHost, ControlPurpose } from "./protocol.js";
@@ -155,5 +155,46 @@ export class ControlStore {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
+  }
+
+  async listProfiles(host?: ControlHost): Promise<Array<Omit<AgentProfile, "credentialId">>> {
+    const directory = join(this.root, "profiles");
+    try {
+      await rejectSymlink(directory);
+      const entries = await readdir(directory, { withFileTypes: true });
+      const profiles: Array<Omit<AgentProfile, "credentialId">> = [];
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const id = entry.name.slice(0, -5);
+        const profile = await readSecretJson<AgentProfile>(this.path("profiles", id));
+        if (profile.schemaVersion !== 1 || (host && profile.host !== host)) continue;
+        const safe: Omit<AgentProfile, "credentialId"> = {
+          schemaVersion: profile.schemaVersion,
+          profileId: profile.profileId,
+          host: profile.host,
+          organization: profile.organization,
+          network: profile.network,
+          agentPubkey: profile.agentPubkey,
+          serviceOrigin: profile.serviceOrigin,
+          createdAt: profile.createdAt,
+        };
+        profiles.push(safe);
+      }
+      return profiles.sort((left, right) => left.profileId.localeCompare(right.profileId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async selectProfile(host: ControlHost, profileId: string): Promise<void> {
+    const profile = await readSecretJson<AgentProfile>(this.path("profiles", profileId));
+    if (profile.schemaVersion !== 1 || profile.host !== host)
+      throw new Error(`Profile ${profileId} is not available for ${host}.`);
+    await atomicSecretJson(this.path("hosts", host), { schemaVersion: 1, profileId });
+  }
+
+  async disconnectHost(host: ControlHost): Promise<void> {
+    await rm(this.path("hosts", host), { force: true });
   }
 }

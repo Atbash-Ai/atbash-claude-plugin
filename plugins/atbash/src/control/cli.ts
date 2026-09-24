@@ -6,6 +6,8 @@ import {
   submitControlPlan,
 } from "./workflow.js";
 import type { ControlHost } from "./protocol.js";
+import { startLocalImportServer } from "./local-import.js";
+import { ControlStore } from "./store.js";
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -46,7 +48,35 @@ export async function runControl(args = process.argv.slice(2)): Promise<unknown>
     return continueControlJob(required(positional, "A job ID is required."));
   if ((area === "setup" || area === "manage") && command === "cancel")
     return cancelControlJob(required(positional, "A job ID is required."));
+  if (area === "profile" && command === "connect") {
+    const local = await startLocalImportServer({
+      jobId: required(positional, "A job ID is required."),
+    });
+    process.stdout.write(
+      `${JSON.stringify({ localUri: local.localUri, expiresInSeconds: 600 })}\n`,
+    );
+    return local.completion;
+  }
+  if (area === "profile" && command === "list") {
+    const requestedHost = option(args, "--host");
+    return {
+      profiles: await new ControlStore().listProfiles(
+        requestedHost ? host(requestedHost) : undefined,
+      ),
+    };
+  }
+  if (area === "profile" && command === "switch") {
+    const requestedHost = host(option(args, "--host"));
+    const profileId = required(option(args, "--profile"), "--profile is required.");
+    await new ControlStore().selectProfile(requestedHost, profileId);
+    return { ok: true, host: requestedHost, profileId };
+  }
+  if (area === "profile" && command === "disconnect") {
+    const requestedHost = host(option(args, "--host"));
+    await new ControlStore().disconnectHost(requestedHost);
+    return { ok: true, host: requestedHost, disconnected: true };
+  }
   throw new Error(
-    "Usage: control setup|manage start --host codex|claude; inspect <job>; plan <job> --input <file>; continue <job>; cancel <job>",
+    "Usage: control setup|manage start|inspect|plan|continue|cancel; profile connect|list|switch|disconnect",
   );
 }
