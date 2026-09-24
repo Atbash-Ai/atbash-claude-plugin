@@ -154,4 +154,14 @@ export class ControlClient {
       ),
     ).execution;
   }
+
+  async getLatestExecution(sessionId: string, secret: string): Promise<ExecutionView | null> {
+    return parseExecutionEnvelope(
+      await this.request(
+        `/api/v1/plugin/sessions/${encodeURIComponent(sessionId)}/execution`,
+        {},
+        secret,
+      ),
+    ).execution;
+  }
 }

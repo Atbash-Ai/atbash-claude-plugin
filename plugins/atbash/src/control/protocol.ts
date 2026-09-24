@@ -150,8 +150,136 @@ export interface PublicJobView {
     | "DONE";
   discovery?: SetupInventory;
   proposal?: ProposalView;
-  execution?: ExecutionView;
+  execution?: Omit<ExecutionView, "keyDeliveries"> & { keyDeliveryCount: number };
   message?: string;
+}
+
+function exactKeys(value: Record<string, unknown>, allowed: string[]): void {
+  if (Object.keys(value).some((key) => !allowed.includes(key)))
+    throw new Error("Plan contains unknown fields.");
+}
+
+function network(value: unknown): ControlNetwork {
+  if (value !== "public" && value !== "private")
+    throw new Error("Plan network must be public or private.");
+  return value;
+}
+
+function planText(value: unknown, label: string, max: number): string {
+  if (typeof value !== "string") throw new Error(`${label} must be text.`);
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > max ||
+    Array.from(normalized).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 31 || code === 127;
+    })
+  )
+    throw new Error(`${label} is invalid.`);
+  return normalized;
+}
+
+function risk(value: unknown): "low" | "medium" | "high" | "critical" {
+  if (value !== "low" && value !== "medium" && value !== "high" && value !== "critical")
+    throw new Error("Agent risk must be low, medium, high, or critical.");
+  return value;
+}
+
+function parseAction(value: unknown): ProposalAction {
+  const row = record(value, "plan action");
+  if (row.type === "create_account") {
+    exactKeys(row, ["type", "network"]);
+    return { type: row.type, network: network(row.network) };
+  }
+  if (row.type === "create_organization") {
+    exactKeys(row, ["type", "network", "name", "description"]);
+    return {
+      type: row.type,
+      network: network(row.network),
+      name: planText(row.name, "Organization name", 64),
+      description: planText(row.description, "Organization description", 280),
+    };
+  }
+  if (row.type === "activate_free_plan") {
+    exactKeys(row, ["type", "network", "organization"]);
+    if (row.network !== "public")
+      throw new Error("The Free plan is available only on the public network.");
+    return {
+      type: row.type,
+      network: row.network,
+      organization: planText(row.organization, "Organization", 64),
+    };
+  }
+  if (row.type === "create_agent") {
+    exactKeys(row, [
+      "type",
+      "network",
+      "organization",
+      "name",
+      "purpose",
+      "risk",
+      "keySource",
+      "agentPubkey",
+    ]);
+    if (row.keySource !== "generate_in_browser" && row.keySource !== "local_public_key")
+      throw new Error("Agent keySource is invalid.");
+    const agentPubkey =
+      row.agentPubkey === undefined ? undefined : planText(row.agentPubkey, "Agent public key", 68);
+    if (row.keySource === "local_public_key" && !/^(02|03)[0-9a-f]{64}$/i.test(agentPubkey ?? ""))
+      throw new Error("A valid local agent public key is required.");
+    if (row.keySource === "generate_in_browser" && agentPubkey !== undefined)
+      throw new Error("A browser-generated agent cannot include a public key.");
+    return {
+      type: row.type,
+      network: network(row.network),
+      organization: planText(row.organization, "Organization", 64),
+      name: planText(row.name, "Agent name", 80),
+      purpose: planText(row.purpose, "Agent purpose", 280),
+      risk: risk(row.risk),
+      keySource: row.keySource,
+      ...(agentPubkey ? { agentPubkey: agentPubkey.toLowerCase() } : {}),
+    };
+  }
+  if (row.type === "update_agent") {
+    exactKeys(row, ["type", "network", "organization", "agentPubkey", "changes"]);
+    const changesRow = record(row.changes, "agent changes");
+    exactKeys(changesRow, ["name", "purpose", "risk", "active"]);
+    if (Object.keys(changesRow).length === 0) throw new Error("Agent changes cannot be empty.");
+    const pubkey = planText(row.agentPubkey, "Agent public key", 68).toLowerCase();
+    if (!/^(02|03)[0-9a-f]{64}$/.test(pubkey)) throw new Error("Agent public key is invalid.");
+    if (changesRow.active !== undefined && typeof changesRow.active !== "boolean")
+      throw new Error("Agent active must be true or false.");
+    return {
+      type: row.type,
+      network: network(row.network),
+      organization: planText(row.organization, "Organization", 64),
+      agentPubkey: pubkey,
+      changes: {
+        ...(changesRow.name === undefined
+          ? {}
+          : { name: planText(changesRow.name, "Agent name", 80) }),
+        ...(changesRow.purpose === undefined
+          ? {}
+          : { purpose: planText(changesRow.purpose, "Agent purpose", 280) }),
+        ...(changesRow.risk === undefined ? {} : { risk: risk(changesRow.risk) }),
+        ...(changesRow.active === undefined ? {} : { active: changesRow.active }),
+      },
+    };
+  }
+  throw new Error("Plan contains an unsupported action.");
+}
+
+export function parseProposalActions(value: unknown): ProposalAction[] {
+  const envelope = record(value, "plan");
+  exactKeys(envelope, ["actions"]);
+  if (
+    !Array.isArray(envelope.actions) ||
+    envelope.actions.length < 1 ||
+    envelope.actions.length > 10
+  )
+    throw new Error("Plan must contain between 1 and 10 actions.");
+  return envelope.actions.map(parseAction);
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {

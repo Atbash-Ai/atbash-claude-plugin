@@ -19,6 +19,8 @@ export interface PendingJob {
   keyDeliveryPrivateKeyPem: string;
   proposalId?: string;
   executionId?: string;
+  activatedProfileId?: string;
+  activatedAt?: string;
 }
 
 export interface AgentCredential {
