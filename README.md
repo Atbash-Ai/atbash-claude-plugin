@@ -1,6 +1,6 @@
 # Atbash Safety Plugin
 
-Atbash Safety is a Claude Code plugin that evaluates supported tool calls through `@atbash/sdk@0.7.1` before Claude Code executes them. It uses a catch-all `PreToolUse` hook, so enforcement is mechanical: the model does not decide when to call Atbash. A bundled `atbash-setup` skill guides secure local configuration and diagnostics without moving user keys to an MCP server.
+Atbash Safety is a Claude Code plugin that evaluates supported tool calls through `@atbash/sdk@0.9.1` before Claude Code executes them. It uses a catch-all `PreToolUse` hook, so enforcement is mechanical: the model does not decide when to call Atbash. A bundled `atbash-setup` skill guides secure local configuration and diagnostics without moving user keys to an MCP server.
 
 While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a canonical SDK result of `allow: true` with verdict `ALLOW` continues.
 
