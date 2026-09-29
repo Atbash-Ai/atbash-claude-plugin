@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Prepared an opt-in session context (`ATBASH_SHARE_SESSION_CONTEXT` / `shareSessionContext`, off by default): a safe transcript tail reader, extraction of the latest request and last 5 tool steps, secret redaction that mirrors the judge service's detector plus stricter local rules, a 4,000-character cap that drops the oldest steps first, and a nonce-bound SHA-256 for a separate request field. It is not sent yet: the SDK judge call has no field for it, and the signed context (stored on chain) stays the four host facts.
+
 ## 0.4.1 - 2026-09-09
 
 - Updated the exact npm dependency and committed universal runtime to `@atbash/sdk@0.7.1`.

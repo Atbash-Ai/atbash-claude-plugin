@@ -50,6 +50,14 @@ Environment variables `ATBASH_AGENT_KEY` and `ATBASH_ORG_NAME` are a session-onl
 
 If the already-enabled fail-closed hook prevents setup actions, tell the user to disable the Atbash plugin, complete configuration manually outside Claude Code, restart Claude Code, and re-enable the plugin.
 
+## Optional session context (not yet active)
+
+If the user asks about sharing session context, give them this opt-in text and let them decide:
+
+> Share your latest request and the last 5 steps of this session with Atbash so the judge can tell whether an action is what you asked for. Detected secrets (keys, tokens, passwords, private keys) are removed before sending. Recipients: Atbash; your organization's selected judge provider; and, when your organization has accepted the v2 JEV consent, JEV through OpenRouter and TypeSafe. It is never written to the Chromia chain. Off by default.
+
+Explain that it is prepared but not sent yet: it takes effect once the Atbash SDK and judge service support session context. Recommend keeping it off until the organization has accepted the v2 JEV consent. The user turns it on with `ATBASH_SHARE_SESSION_CONTEXT=1` or `"shareSessionContext": true` in their own config file, edited by them; `ATBASH_SHARE_SESSION_CONTEXT=0` turns it off. Do not edit the config file for them.
+
 ## Activate or deactivate
 
 Treat Atbash as active only when all of these are true:
