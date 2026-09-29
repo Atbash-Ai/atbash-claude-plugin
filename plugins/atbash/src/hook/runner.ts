@@ -1,6 +1,6 @@
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
-import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
+import { createAtbashGuard, GuardConfigError, type ToolCallGuard } from "../atbash/guard.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 
@@ -42,11 +42,14 @@ export async function evaluatePreToolUse(
   let guard: ToolCallGuard;
   try {
     guard = createGuard();
-  } catch {
+  } catch (error) {
     return {
       allow: false,
       verdict: "ERROR",
-      reason: "Atbash ERROR: configuration is missing or invalid.",
+      reason:
+        error instanceof GuardConfigError
+          ? error.message
+          : "Atbash ERROR: configuration is missing or invalid.",
     };
   }
 

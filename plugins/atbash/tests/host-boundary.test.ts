@@ -20,7 +20,6 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -28,6 +27,7 @@ import test from "node:test";
 import { generateKeypair } from "@atbash/sdk";
 
 import { makeHookInput } from "./fixtures.js";
+import { startLocalJudge } from "./local-judge.js";
 
 const ENTRY = "dist/pre-tool-use.cjs";
 const DENY_SHAPE = /"permissionDecision":"deny"/;
@@ -36,62 +36,6 @@ const DENY_SHAPE = /"permissionDecision":"deny"/;
 // before loading the bundle (src/hook/protocol.ts HOOK_ANSWER_CHANNEL). Fixtures that stand in for
 // the bundle answer the same way; stdout is no longer a decision channel at all.
 const ANSWER = 'globalThis[Symbol.for("atbash.hook.answer")]';
-
-interface JudgeOptions {
-  delayMs: number;
-  verdict?: "ALLOW" | "BLOCK";
-}
-
-async function startJudge({ delayMs, verdict = "ALLOW" }: JudgeOptions) {
-  const hits: string[] = [];
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    hits.push(`${req.method} ${url.pathname}`);
-    req.resume();
-    req.on("end", () => {
-      res.setHeader("content-type", "application/json");
-      const answer = (body: unknown) => setTimeout(() => res.end(JSON.stringify(body)), delayMs);
-      if (url.pathname === "/api/ai/exists") {
-        answer({
-          registered: true,
-          pubkey: url.searchParams.get("pubkey"),
-          org_encryption_pubkey: null,
-        });
-      } else if (url.pathname === "/api/risk-engine") {
-        answer({ policy: "", is_custom: false, default_policy: "default", is_jailed: false });
-      } else if (url.pathname === "/api/v1/judge") {
-        answer(
-          verdict === "BLOCK"
-            ? {
-                verdict: "BLOCK",
-                action_type: "block",
-                allow: false,
-                reason: "denied by the test judge",
-                tool_call_id: "tc-1",
-              }
-            : {
-                verdict: "ALLOW",
-                action_type: "allow",
-                allow: true,
-                reason: "routine",
-                tool_call_id: "tc-1",
-              },
-        );
-      } else {
-        res.statusCode = 404;
-        res.end("{}");
-      }
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const port = typeof address === "object" && address !== null ? address.port : 0;
-  return {
-    endpoint: `http://127.0.0.1:${port}`,
-    hits,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-}
 
 interface RunResult {
   code: number | null;
@@ -139,10 +83,10 @@ function runHook(entry: string, env: NodeJS.ProcessEnv, cwd = process.cwd()): Pr
 test("a slow-but-alive judge is denied before the host's 35 s hook timeout", async () => {
   // Two sequential SDK requests, each answered after 20 s: 0.4.1 waited for both (40.8 s) and
   // the host had already let the tool run. The hook must give up and deny well inside 35 s.
-  const judge = await startJudge({ delayMs: 20_000 });
+  const judge = await startLocalJudge({ delayMs: 20_000 });
   try {
     const result = await runHook(ENTRY, {
-      ATBASH_ENDPOINT: judge.endpoint,
+      ...judge.env,
       ATBASH_AGENT_KEY: generateKeypair().priv_key,
     });
     assert.equal(result.code, 0, result.stderr);
@@ -280,10 +224,10 @@ test("an invalid ATBASH_HOOK_DEADLINE_MS denies instead of running without a dea
 test("a valid custom ATBASH_HOOK_DEADLINE_MS is the deadline that actually fires", async () => {
   // Same slow judge as the first case; with a 1.5 s deadline the deny must come at about 1.5 s,
   // not at the 28 s default and not from the SDK's own per-request budget.
-  const judge = await startJudge({ delayMs: 20_000 });
+  const judge = await startLocalJudge({ delayMs: 20_000 });
   try {
     const result = await runHook(ENTRY, {
-      ATBASH_ENDPOINT: judge.endpoint,
+      ...judge.env,
       ATBASH_AGENT_KEY: generateKeypair().priv_key,
       ATBASH_HOOK_DEADLINE_MS: "1500",
     });
@@ -300,10 +244,10 @@ test("a valid custom ATBASH_HOOK_DEADLINE_MS is the deadline that actually fires
 });
 
 test("a fast judge is still answered normally through the shim", async () => {
-  const judge = await startJudge({ delayMs: 0 });
+  const judge = await startLocalJudge({ delayMs: 0 });
   try {
     const result = await runHook(ENTRY, {
-      ATBASH_ENDPOINT: judge.endpoint,
+      ...judge.env,
       ATBASH_AGENT_KEY: generateKeypair().priv_key,
     });
     assert.equal(result.code, 0, result.stderr);
@@ -357,10 +301,10 @@ test("a decision the bundle already wrote is never followed by a second one", as
 
 test("the largest accepted deadline stays under the host timeout and 34000 is refused", async () => {
   // A judge that never answers; at the maximum the hook must still answer with margin to 35 s.
-  const judge = await startJudge({ delayMs: 120_000 });
+  const judge = await startLocalJudge({ delayMs: 120_000 });
   try {
     const atMax = await runHook(ENTRY, {
-      ATBASH_ENDPOINT: judge.endpoint,
+      ...judge.env,
       ATBASH_AGENT_KEY: generateKeypair().priv_key,
       ATBASH_HOOK_DEADLINE_MS: "30000",
     });
@@ -1299,10 +1243,10 @@ test("a forged decided mark does not silence the exit backstop or the refusal", 
 test("a judge BLOCK reaches the host as the bundle's own deny through the channel", async () => {
   // End to end through the real bundle: the SDK's block verdict becomes the bundle's serializeDeny,
   // handed to the shim over the channel and written to stdout once, with exit 0.
-  const judge = await startJudge({ delayMs: 0, verdict: "BLOCK" });
+  const judge = await startLocalJudge({ delayMs: 0, verdict: "BLOCK" });
   try {
     const result = await runHook(ENTRY, {
-      ATBASH_ENDPOINT: judge.endpoint,
+      ...judge.env,
       ATBASH_AGENT_KEY: generateKeypair().priv_key,
     });
     assert.equal(result.code, 0, result.stderr);

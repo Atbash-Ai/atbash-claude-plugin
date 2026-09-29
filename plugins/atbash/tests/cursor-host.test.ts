@@ -7,9 +7,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { generateKeypair } from "@atbash/sdk";
 
+import { createJudgeSigner } from "./local-judge.js";
+
 test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", async () => {
   for (const verdict of ["ALLOW", "BLOCK", "HOLD"] as const) {
     let judged = false;
+    // A loopback judge is accepted only as a developer's signed local judge (see judge-endpoint.test).
+    const signer = createJudgeSigner();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       req.resume();
@@ -34,7 +38,7 @@ test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", a
           );
         } else if (url.pathname === "/api/v1/judge") {
           judged = true;
-          res.end(
+          const body = Buffer.from(
             JSON.stringify({
               verdict,
               action_type: verdict === "HOLD" ? "hold_for_user_confirm" : verdict.toLowerCase(),
@@ -43,6 +47,8 @@ test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", a
               tool_call_id: "cursor-test",
             }),
           );
+          res.setHeader("X-Atbash-Signature", signer.sign(body));
+          res.end(body);
         } else {
           res.statusCode = 404;
           res.end("{}");
@@ -65,6 +71,8 @@ test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", a
               HOME: home,
               USERPROFILE: home,
               ATBASH_ENDPOINT: `http://127.0.0.1:${address.port}`,
+              ATBASH_JUDGE_VERIFY_PUBKEY: signer.verifyPubKey,
+              ATBASH_DEV_ALLOW_LOCAL_JUDGE: "1",
               ATBASH_AGENT_KEY: generateKeypair().priv_key,
             },
           });
