@@ -3,6 +3,13 @@ import type { Decision, ToolCallInput } from "@atbash/sdk";
 import { createAtbashGuard, GuardConfigError, type ToolCallGuard } from "../atbash/guard.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
+import {
+  checkSelfProtection,
+  defaultSelfProtectionContext,
+  selfProtectionReason,
+  type SelfProtectionContext,
+  type SelfProtectionHit,
+} from "./self-protection.js";
 
 export type GuardFactory = () => ToolCallGuard;
 
@@ -38,7 +45,25 @@ function denyFromDecision(decision: Decision): HookOutcome {
 export async function evaluatePreToolUse(
   input: PreToolUseInput,
   createGuard: GuardFactory = createAtbashGuard,
+  protection: SelfProtectionContext = defaultSelfProtectionContext(input.cwd),
 ): Promise<HookOutcome> {
+  // Local and deterministic, before the judge or even the configuration: a call that would switch
+  // Atbash off or re-point it is denied whatever the judge would say, and whether or not Atbash is
+  // configured. A failure of the check itself is a deny, never a pass to the judge.
+  let hit: SelfProtectionHit | undefined;
+  try {
+    hit = checkSelfProtection(input.tool_name, input.tool_input, protection);
+  } catch {
+    return {
+      allow: false,
+      verdict: "ERROR",
+      reason: "Atbash ERROR: the local self-protection check failed.",
+    };
+  }
+  if (hit !== undefined) {
+    return { allow: false, verdict: "BLOCK", reason: selfProtectionReason(hit) };
+  }
+
   let guard: ToolCallGuard;
   try {
     guard = createGuard();
