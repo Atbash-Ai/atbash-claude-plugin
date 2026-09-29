@@ -1,5 +1,5 @@
 import { readHookInput } from "./io.js";
-import { parsePreToolUseInput, serializeDeny } from "./protocol.js";
+import { deliverDecision, parsePreToolUseInput, serializeDeny } from "./protocol.js";
 import { evaluatePreToolUse, type GuardFactory } from "./runner.js";
 
 export interface PreToolUseCliDependencies {
@@ -27,7 +27,7 @@ export async function runPreToolUseCli(): Promise<void> {
     output = serializeDeny("Atbash ERROR: the hook input could not be read.");
   }
 
-  if (output !== "") {
-    process.stdout.write(`${output}\n`);
-  }
+  // A permit is the empty string: the shim records it (a permit is never final - a later deny
+  // overrides it and the deadline still applies) and writes nothing.
+  deliverDecision(output);
 }

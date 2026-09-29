@@ -4,7 +4,7 @@ import type { PreToolUseInput } from "./protocol.js";
 
 export function buildAtbashContext(input: PreToolUseInput): string {
   const parts = [
-    "source=claude-code",
+    `source=${input.host === "cursor" ? "cursor" : "claude-code"}`,
     `workspace=${basename(input.cwd) || "unknown"}`,
     `permission_mode=${input.permission_mode}`,
   ];

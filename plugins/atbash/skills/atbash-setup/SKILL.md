@@ -58,7 +58,7 @@ Treat Atbash as active only when all of these are true:
 2. The Atbash `PreToolUse` hook is loaded; the user can review it in `/hooks`.
 3. Local Atbash credentials and organization configuration are valid.
 
-To deactivate Atbash, tell the user to disable or uninstall the plugin from the `/plugin` menu (or `claude plugin disable atbash`). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
+To deactivate Atbash, tell the user to disable or uninstall the plugin from the `/plugin` menu (or run `claude plugin disable atbash` in their own terminal). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls. Never try to run that command, edit Claude Code settings, the Atbash config file or the plugin's files, or change `ATBASH_*` variables yourself: the hook denies those tool calls deterministically, before the judge, by design. Tell the user to make the change outside the agent instead.
 
 ## Verify and troubleshoot
 
