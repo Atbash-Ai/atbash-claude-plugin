@@ -67,6 +67,10 @@ export function resolveShareSessionContext(
   }
 }
 
+// C0 and C1 control characters, including NUL (which the chain cannot store).
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
 function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
 }
@@ -78,11 +82,7 @@ function clip(text: string, max: number): string {
  */
 function cleanItem(raw: string, max: number): string {
   const window = raw.slice(0, max * RAW_WINDOW_FACTOR);
-  // eslint-disable-next-line no-control-regex
-  const flattened = window
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const flattened = window.replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
   const redacted = redactSessionText(redactSecrets(flattened).redacted);
   // Again after clipping: a cut can leave a label whose value is a fragment.
   return redactSessionText(clip(redacted, max));
