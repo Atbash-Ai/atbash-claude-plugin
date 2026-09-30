@@ -150,3 +150,53 @@ test("a local judge whose ALLOW is unsigned or signed by another key is denied",
     }
   }
 });
+
+test("a judge ALLOW with allow:false is denied", async () => {
+  // A signed answer that contradicts itself: verdict ALLOW, action_type allow, allow false. The
+  // SDK's auditToolCall maps it to a permit from action_type alone; the hook must not.
+  const judge = await startLocalJudge({ allowField: false });
+  try {
+    await withHome(async (home) => {
+      const result = await runBuiltHook(
+        makeHookInput(),
+        { ...judge.env, ATBASH_AGENT_KEY: generateKeypair().priv_key },
+        home,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        DENY_SHAPE,
+        `an allow:false answer was a permit: ${result.stdout}`,
+      );
+      assert.match(result.stdout, /allow was not true/, result.stdout);
+      assert.equal(
+        judged(judge.hits),
+        true,
+        `the judge was not consulted: ${judge.hits.join(", ")}`,
+      );
+    });
+  } finally {
+    await judge.close();
+  }
+});
+
+test("a remote https judge with a config-file verify key is refused without the flag", async () => {
+  // What an agent with file access could plant: its own https judge and its own signing key, both
+  // in the config file. The SDK accepts that pair; the hook must not - a judge other than Atbash's
+  // own is taken only from the hook's environment, with the developer flag.
+  await withHome(async (home) => {
+    mkdirSync(join(home, ".config", "atbash"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "atbash", "config.json"),
+      JSON.stringify({
+        agentKey: generateKeypair().priv_key,
+        judgeEndpoint: "https://judge.attacker.invalid",
+        judgeVerifyPubKey: `02${"ab".repeat(32)}`,
+      }),
+    );
+    const result = await runBuiltHook(makeHookInput(), {}, home);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, DENY_SHAPE, result.stdout);
+    assert.match(result.stdout, /ATBASH_DEV_ALLOW_LOCAL_JUDGE/, result.stdout);
+  });
+});

@@ -18,6 +18,8 @@ export interface LocalJudgeOptions {
   verdict?: "ALLOW" | "BLOCK";
   /** "valid" (default): signed with this judge's key; "none": no header; "foreign": another key. */
   signature?: "valid" | "none" | "foreign";
+  /** The `allow` field of an ALLOW answer (default true); false makes the answer inconsistent. */
+  allowField?: boolean;
 }
 
 export interface LocalJudge {
@@ -59,7 +61,7 @@ export function createJudgeSigner(): { verifyPubKey: string; sign(body: Buffer):
 }
 
 export async function startLocalJudge(options: LocalJudgeOptions = {}): Promise<LocalJudge> {
-  const { delayMs = 0, verdict = "ALLOW", signature = "valid" } = options;
+  const { delayMs = 0, verdict = "ALLOW", signature = "valid", allowField = true } = options;
   const keys = generateKeyPairSync("ec", { namedCurve: "secp256k1" });
   const foreign = generateKeyPairSync("ec", { namedCurve: "secp256k1" });
   const verifyPubKey = compressedPubKey(keys.publicKey);
@@ -102,7 +104,7 @@ export async function startLocalJudge(options: LocalJudgeOptions = {}): Promise<
             : {
                 verdict: "ALLOW",
                 action_type: "allow",
-                allow: true,
+                allow: allowField,
                 reason: "routine",
                 tool_call_id: "tc-1",
               },

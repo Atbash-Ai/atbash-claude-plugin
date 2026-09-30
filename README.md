@@ -42,20 +42,20 @@ claude plugin update atbash@atbash-ai
 
 The plugin calls `Atbash.fromConfig()`. The SDK resolves values in this order: explicit SDK option, environment variable, then `~/.config/atbash/config.json`.
 
-| Setting                    | Environment variable           | Required                                                     |
-| -------------------------- | ------------------------------ | ------------------------------------------------------------ |
-| Agent private key          | `ATBASH_AGENT_KEY`             | Yes, unless present in the SDK config file                   |
-| Organization               | `ATBASH_ORG_NAME`              | Yes; must match the agent's onboarded org                    |
-| Judge endpoint             | `ATBASH_ENDPOINT`              | No; a local or plain-http judge needs the two settings below |
-| Judge response-signing key | `ATBASH_JUDGE_VERIFY_PUBKEY`   | No; required for a self-hosted or local judge                |
-| Local judge (developers)   | `ATBASH_DEV_ALLOW_LOCAL_JUDGE` | No; `1` allows a loopback judge, environment only            |
-| Chain migration switch     | `ATBASH_DEFAULT_CHAIN_NETWORK` | No; leave unset                                              |
-| Hook SDK timeout           | `ATBASH_HOOK_TIMEOUT_MS`       | No; defaults to 30,000 ms                                    |
-| Hook hard deadline         | `ATBASH_HOOK_DEADLINE_MS`      | No; defaults to 28,000 ms (1,000-30,000)                     |
+| Setting                    | Environment variable           | Required                                                                                         |
+| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------ |
+| Agent private key          | `ATBASH_AGENT_KEY`             | Yes, unless present in the SDK config file                                                       |
+| Organization               | `ATBASH_ORG_NAME`              | Yes; must match the agent's onboarded org                                                        |
+| Judge endpoint             | `ATBASH_ENDPOINT`              | No; any judge other than Atbash's own needs the two settings below, all three in the environment |
+| Judge response-signing key | `ATBASH_JUDGE_VERIFY_PUBKEY`   | For a local or self-hosted judge; environment only, 66 hex digits                                |
+| Other judge (developers)   | `ATBASH_DEV_ALLOW_LOCAL_JUDGE` | No; `1` allows a local or self-hosted judge; environment only                                    |
+| Chain migration switch     | `ATBASH_DEFAULT_CHAIN_NETWORK` | No; leave unset                                                                                  |
+| Hook SDK timeout           | `ATBASH_HOOK_TIMEOUT_MS`       | No; defaults to 30,000 ms                                                                        |
+| Hook hard deadline         | `ATBASH_HOOK_DEADLINE_MS`      | No; defaults to 28,000 ms (1,000-30,000)                                                         |
 
 SDK 0.9.1 no longer reads `ATBASH_BLOCKCHAIN_RID`, `ATBASH_PROVIDER` or `ATBASH_PROVIDER_MODEL`; the chain follows the organization.
 
-**Judge endpoint rule.** The SDK accepts a plain-http loopback endpoint (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) without any response signature, so a program on the same machine could answer `ALLOW` to every call. The hook refuses a loopback or non-https endpoint - every call is denied with a message naming the fix - unless `ATBASH_DEV_ALLOW_LOCAL_JUDGE=1` is set in the hook's own environment **and** `ATBASH_JUDGE_VERIFY_PUBKEY` (or `judgeVerifyPubKey` in the config file) holds the judge's 66-hex response-signing key, in which case the SDK verifies the signature on every verdict. The flag is never read from `~/.config/atbash/config.json`, so an endpoint written there alone cannot switch enforcement off. `node plugins/atbash/runtime/status.cjs` reports the same refusal as a `configuration_error`.
+**Judge endpoint rule.** The SDK accepts a plain-http loopback judge with no response signature, and any https judge once a verify key is set - and both settings may come from `~/.config/atbash/config.json`, a file an agent can write. So a planted `judgeEndpoint` (a local server, or someone's own https judge with their own key) could answer `ALLOW` to every call. The hook accepts Atbash's own judge (`https://atbash.ai`, `https://www.atbash.ai`) from anywhere; any other endpoint - local, plain-http, or a self-hosted https judge - is refused, with every call denied and a message naming the fix, unless the hook's own **environment** sets all three: `ATBASH_ENDPOINT` to that judge (a value from the config file is never enough), `ATBASH_JUDGE_VERIFY_PUBKEY` to its 66-hex response-signing key (so the SDK verifies the signature on every verdict), and `ATBASH_DEV_ALLOW_LOCAL_JUDGE=1`. `node plugins/atbash/runtime/status.cjs` reports the same refusal as a `configuration_error`. A permit also needs the judge's own `allow: true`: an answer of `verdict: ALLOW` with `allow: false` is denied (SDK 0.9.1's `auditToolCall` would otherwise map it to a permit).
 
 Only the private key is configured. The SDK validates it, uses it locally for agent identity and cryptographic signing, and derives the corresponding public key locally. The public key must already be onboarded to the named organization in the [Atbash agent dashboard](https://atbash.ai/risk-engine/agents), but it should not be added to the plugin configuration. The plugin never uploads the config file or private key to an MCP service.
 
