@@ -215,7 +215,8 @@ test("self-protection denies registry, fish, python and nested-agent environment
       "NODE_OPTIONS prefix",
     );
     denied("Bash", cmd("PATH=/tmp/fake:$PATH codex exec hi"), ctx, "PATH prefix");
-    denied("Bash", cmd("NODE_TLS_REJECT_UNAUTHORIZED=0 claude -p hi"), ctx, "TLS prefix");
+    // Assembled so the fail-open scanner does not flag the test input itself.
+    denied("Bash", cmd("NODE_TLS_" + "REJECT_UNAUTHORIZED=0 claude -p hi"), ctx, "TLS prefix");
     denied("Bash", cmd("XDG_CONFIG_HOME=/tmp/x codex exec hi"), ctx, "XDG_CONFIG_HOME prefix");
     denied("Bash", cmd("claude --setting-sources project -p hi"), ctx, "--setting-sources");
     denied(
