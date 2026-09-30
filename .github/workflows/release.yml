@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     strategy:
@@ -24,13 +28,18 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Use the repository npm version
+        run: npm install --global npm@11.12.1
 
       - name: Install dependencies
         run: npm ci
@@ -45,26 +54,92 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Use the repository npm version
+        run: npm install --global npm@11.12.1
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify committed marketplace runtime
+      - name: Verify exact release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
+          const root = readJson("package.json");
+          const plugin = readJson("plugins/atbash/package.json");
+          const manifest = readJson("plugins/atbash/.claude-plugin/plugin.json");
+          const versions = [root.version, plugin.version, manifest.version];
+          if (!versions.every((version) => typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version))) {
+            throw new Error("Release versions must all be exact stable semver values");
+          }
+          if (!versions.every((version) => version === versions[0])) {
+            throw new Error("Root, plugin, and marketplace manifest versions must match exactly");
+          }
+          if (process.env.RELEASE_TAG !== `v${versions[0]}`) {
+            throw new Error("Release tag must exactly match the package version");
+          }
+          NODE
+
+      - name: Verify committed universal marketplace runtime
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 
-      - name: Package plugin
-        run: npm pack --workspace @atbash/claude-plugin
+      - name: Package and checksum the exact plugin artifact
+        id: pack
+        shell: bash
+        run: |
+          npm pack --workspace @atbash/claude-plugin --ignore-scripts --json > pack-result.json
+          package_file="$(node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const root = JSON.parse(readFileSync("package.json", "utf8"));
+          const plugin = JSON.parse(readFileSync("plugins/atbash/package.json", "utf8"));
+          const result = JSON.parse(readFileSync("pack-result.json", "utf8"));
+          if (!Array.isArray(result) || result.length !== 1) throw new Error("Expected exactly one packed artifact");
+          const [artifact] = result;
+          if (artifact.name !== plugin.name || artifact.version !== root.version || artifact.version !== plugin.version) {
+            throw new Error("Packed artifact identity does not match the release manifests");
+          }
+          const paths = new Set((artifact.files ?? []).map((file) => file.path));
+          for (const required of [
+            ".claude-plugin/plugin.json",
+            "runtime/manifest.json",
+            "runtime/native/darwin-arm64/atbash.node",
+            "runtime/native/linux-arm64/atbash.node",
+            "runtime/native/linux-x64/atbash.node",
+            "runtime/native/win32-x64/atbash.node",
+            "skills/atbash-setup/SKILL.md",
+          ]) {
+            if (!paths.has(required)) throw new Error(`Packed artifact is missing ${required}`);
+          }
+          if (typeof artifact.filename !== "string" || artifact.filename.length === 0) {
+            throw new Error("Packed artifact filename is missing");
+          }
+          process.stdout.write(artifact.filename);
+          NODE
+          )"
+          test -f "$package_file"
+          sha256sum "$package_file" > "$package_file.sha256"
+          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
 
-      - name: Upload plugin package
-        uses: actions/upload-artifact@v4
+      - name: Upload universal plugin package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: atbash-claude-plugin-universal
-          path: atbash-claude-plugin-*.tgz
+          name: atbash-claude-plugin-${{ github.ref_name }}
+          path: |
+            ${{ steps.pack.outputs.package_file }}
+            ${{ steps.pack.outputs.package_file }}.sha256
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
