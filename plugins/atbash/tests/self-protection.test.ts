@@ -383,15 +383,25 @@ test("the runner denies a self-protection hit without consulting the judge", asy
   );
 });
 
-test("oversized and deeply nested inputs are bounded, not a crash", () => {
+test("oversized and deeply nested inputs are denied, never passed unread", () => {
   const f = fixture();
   try {
-    let nested: unknown = { command: "claude plugin disable atbash" };
+    let nested: unknown = { command: "echo hello" };
     for (let i = 0; i < 50; i += 1) nested = { inner: nested };
-    // Deeper than the walk goes: not inspected, and not a crash (the judge still sees the call).
-    assert.equal(checkSelfProtection("mcp__x__run", nested, f.context), undefined);
-    const huge = `${"a ".repeat(200_000)}; claude plugin disable atbash`;
-    assert.doesNotThrow(() => checkSelfProtection("Bash", { command: huge }, f.context));
+    // Deeper than the walk goes: a limit is a deny, not a way around the check.
+    assert.match(
+      checkSelfProtection("mcp__x__run", nested, f.context)?.target ?? "",
+      /too large or too deep/,
+    );
+    const huge = `${"a ".repeat(200_000)}; echo hello`;
+    assert.match(
+      checkSelfProtection("Bash", { command: huge }, f.context)?.target ?? "",
+      /too large or too deep/,
+    );
+    // Within the limits, an ordinary deep input is not a hit.
+    let shallow: unknown = { command: "echo hello" };
+    for (let i = 0; i < 10; i += 1) shallow = { inner: shallow };
+    assert.equal(checkSelfProtection("mcp__x__run", shallow, f.context), undefined);
     assert.notEqual(
       checkSelfProtection(
         "Bash",
