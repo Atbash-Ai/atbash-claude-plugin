@@ -283,12 +283,14 @@ test("a long argument listed first does not hide the call's target", () => {
 
 // Security re-review 2026-10-03 (LOW): one malformed, deeply nested line must not discard the transcript.
 test("one deeply nested line does not discard the rest of the transcript", () => {
-  let nested: unknown = "x";
-  for (let i = 0; i < 6000; i++) nested = [{ type: "text", content: nested }];
-  const bad = JSON.stringify({
-    type: "user",
-    message: { role: "user", content: [{ type: "tool_result", content: nested }] },
-  });
+  // Built as a string: JSON.stringify of a 20,000-deep value would overflow in the test itself.
+  const depth = 20_000;
+  const bad =
+    '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":' +
+    '[{"type":"text","content":'.repeat(depth) +
+    '"x"' +
+    "}]".repeat(depth) +
+    "}]}}";
   const t = splitTranscript([
     userLine("Fetch the Dell laptop reviews."),
     bad,

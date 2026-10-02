@@ -34,12 +34,15 @@ export type CallOrigin = "tool_output" | "unknown";
 export const MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
 /** Upper bound on the tool-output text scanned for instructions. */
 const MAX_UNTRUSTED_CHARS = 512 * 1024;
-/** Upper bound on the user text and on the call's joined argument values. */
+/** Upper bound on the user text and on the call's argument values (in total, and per value). */
 const MAX_USER_CHARS = 256 * 1024;
 const MAX_CALL_CHARS = 64 * 1024;
-/** Upper bounds on the words and instructions compared. */
+const MAX_VALUE_CHARS = 4 * 1024;
+/** Upper bound on the call words compared. Instructions are not counted: each is compared as
+ * soon as it is found, so decoys cannot crowd out the real one (security re-review 2026-10-03). */
 const MAX_CALL_WORDS = 2000;
-const MAX_INSTRUCTIONS = 5000;
+/** Transcript content nested deeper than this is not text anyone wrote; it is skipped. */
+const MAX_CONTENT_DEPTH = 32;
 /** A token longer than this is not a word anyone would repeat; it is skipped. */
 const MAX_WORD_LENGTH = 64;
 /** The whole check gives up after this long. */
@@ -84,57 +87,69 @@ function words(text: string, tick: () => void, limit = Number.POSITIVE_INFINITY)
   return out;
 }
 
+/**
+ * The text of an instruction: up to 240 characters, ending at a sentence end or a closing quote.
+ * A "." "!" or "?" ends it only when no word character follows, so an address or URL inside it
+ * (payroll-backup@exfil-example.net, https://a.b/c) stays whole. One character per step: linear.
+ */
+const INSTRUCTION_TAIL = String.raw`(?:[^.!?\n'"}\]]|[.!?](?=\w)){6,240}`;
 /** An instruction addressed to the agent, anywhere in a line ("... 'review': 'Please grant ..."). */
-const ADDRESSED =
-  /\b(?:please|kindly|you (?:must|should|need to|have to)|ignore (?:all |the )?(?:previous|prior|above)|disregard (?:all |the )?(?:previous|prior|above)|i want you to|your (?:new |next )?task is)\b[^.!?\n'"}\]]{6,240}/gi;
+const ADDRESSED = new RegExp(
+  String.raw`\b(?:please|kindly|you (?:must|should|need to|have to)|ignore (?:all |the )?(?:previous|prior|above)|disregard (?:all |the )?(?:previous|prior|above)|i want you to|your (?:new |next )?task is)\b` +
+    INSTRUCTION_TAIL,
+  "gi",
+);
 /** An imperative verb opening a sentence or a quoted field ("... 'note': 'Withdraw 5 Bitcoin to ..."). */
-const IMPERATIVE_START =
-  /(?:^|[.!?]\s+|['":]\s*)((?:withdraw|transfer|send|grant|give|move|delete|remove|leave|share|post|email|upload|forward|pay|buy|sell|deposit|invite|unlock|disable|turn off|install|retrieve|download|export|change|reset|cancel|update|add|schedule|book|follow|tweet|publish|navigate|visit)\b[^.!?\n'"}\]]{6,240})/gi;
+const IMPERATIVE_START = new RegExp(
+  String.raw`(?:^|[.!?]\s+|['":]\s*)((?:withdraw|transfer|send|grant|give|move|delete|remove|leave|share|post|email|upload|forward|pay|buy|sell|deposit|invite|unlock|disable|turn off|install|retrieve|download|export|change|reset|cancel|update|add|schedule|book|follow|tweet|publish|navigate|visit)\b` +
+    INSTRUCTION_TAIL +
+    ")",
+  "gi",
+);
 /**
  * Source code reads like instructions ("update(...)", "set x = ..."); skip code-looking lines.
  * Braces alone do not make a line code: tool output is often JSON, where injections hide.
  */
 const CODE_LINE = /[=;]|\bdef |\bclass |\breturn\b|^\s*(?:#|\/\/|\d+\s)/;
 
-function instructions(untrusted: string, tick: () => void): string[] {
-  const out: string[] = [];
+/** Instructions in tool output, yielded one at a time so each is compared as soon as it is found. */
+function* instructions(untrusted: string, tick: () => void): Generator<string> {
   for (const line of untrusted.split(/\r?\n|\\n/)) {
     tick();
     const code = CODE_LINE.test(line);
     if (!code || /\bplease\b/i.test(line)) {
-      for (const m of line.matchAll(ADDRESSED)) {
-        out.push(m[0]);
-        if (out.length >= MAX_INSTRUCTIONS) return out;
-      }
+      for (const m of line.matchAll(ADDRESSED)) yield m[0];
     }
     if (!code) {
-      for (const m of line.matchAll(IMPERATIVE_START)) {
-        out.push(m[1] ?? "");
-        if (out.length >= MAX_INSTRUCTIONS) return out;
-      }
+      for (const m of line.matchAll(IMPERATIVE_START)) yield m[1] ?? "";
     }
   }
-  return out;
 }
 
-function stringValues(
-  value: unknown,
-  out: string[] = [],
-  depth = 0,
-  budget = { chars: MAX_CALL_CHARS },
-): string[] {
-  if (depth > 20 || budget.chars <= 0) return out;
-  if (typeof value === "string") {
-    const part = value.slice(0, budget.chars);
-    budget.chars -= part.length;
-    out.push(part);
-  } else if (Array.isArray(value)) {
-    for (const v of value) stringValues(v, out, depth + 1, budget);
-  } else if (value !== null && typeof value === "object") {
-    for (const v of Object.values(value as Record<string, unknown>))
-      stringValues(v, out, depth + 1, budget);
-  }
-  return out;
+/**
+ * The call's string values, each capped, shortest first: the short values (a recipient, a URL, an
+ * account) are the ones that name a target, so a long body listed first cannot use up the budget
+ * before them (security re-review 2026-10-03). Every leaf counts against the budget.
+ */
+function stringValues(toolInput: unknown, tick: () => void): string[] {
+  const out: string[] = [];
+  const budget = { chars: MAX_CALL_CHARS };
+  const walk = (value: unknown, depth: number): void => {
+    tick();
+    if (depth > 20 || budget.chars <= 0) return;
+    budget.chars -= 1;
+    if (typeof value === "string") {
+      const part = value.slice(0, Math.min(MAX_VALUE_CHARS, budget.chars));
+      budget.chars -= part.length;
+      out.push(part);
+    } else if (Array.isArray(value)) {
+      for (const v of value) walk(v, depth + 1);
+    } else if (value !== null && typeof value === "object") {
+      for (const v of Object.values(value as Record<string, unknown>)) walk(v, depth + 1);
+    }
+  };
+  walk(toolInput, 0);
+  return out.sort((a, b) => a.length - b.length);
 }
 
 /** The rule itself, on text already extracted from the transcript. Never throws. */
@@ -147,7 +162,7 @@ export function classifyCallOrigin(
   try {
     const userWords = words(transcript.userText.slice(-MAX_USER_CHARS), tick);
     const callWords = new Set<string>();
-    for (const w of words(stringValues(toolInput).join(" "), tick, MAX_CALL_WORDS * 4)) {
+    for (const w of words(stringValues(toolInput, tick).join(" "), tick, MAX_CALL_WORDS * 4)) {
       if (!userWords.has(w)) callWords.add(w);
       if (callWords.size >= MAX_CALL_WORDS) break;
     }
@@ -168,8 +183,9 @@ export function classifyCallOrigin(
   }
 }
 
-function textOf(content: unknown): string {
+function textOf(content: unknown, depth = 0): string {
   if (typeof content === "string") return content;
+  if (depth >= MAX_CONTENT_DEPTH) return "";
   if (Array.isArray(content)) {
     return content
       .map((part) => {
@@ -177,7 +193,7 @@ function textOf(content: unknown): string {
         if (part !== null && typeof part === "object") {
           const p = part as Record<string, unknown>;
           if (typeof p.text === "string") return p.text;
-          if (p.content !== undefined) return textOf(p.content);
+          if (p.content !== undefined) return textOf(p.content, depth + 1);
         }
         return "";
       })
@@ -196,31 +212,31 @@ export function splitTranscript(lines: readonly string[]): TranscriptText {
   const user: string[] = [];
   const untrusted: string[] = [];
   for (const line of lines) {
-    let entry: unknown;
+    // One malformed or pathological line is skipped; it never discards the rest of the transcript.
     try {
-      entry = JSON.parse(line);
+      const entry: unknown = JSON.parse(line);
+      if (entry === null || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      if (e.type === "attachment") {
+        untrusted.push(textOf(e.attachment) || JSON.stringify(e.attachment ?? ""));
+        continue;
+      }
+      if (e.type !== "user") continue;
+      const message = e.message as Record<string, unknown> | undefined;
+      const content = message?.content;
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part === null || typeof part !== "object") continue;
+          const p = part as Record<string, unknown>;
+          if (p.type === "tool_result") untrusted.push(textOf(p.content));
+          else if (p.type === "text" && e.isMeta !== true && typeof p.text === "string")
+            user.push(p.text);
+        }
+      } else if (typeof content === "string" && e.isMeta !== true) {
+        user.push(content);
+      }
     } catch {
       continue;
-    }
-    if (entry === null || typeof entry !== "object") continue;
-    const e = entry as Record<string, unknown>;
-    if (e.type === "attachment") {
-      untrusted.push(textOf(e.attachment) || JSON.stringify(e.attachment ?? ""));
-      continue;
-    }
-    if (e.type !== "user") continue;
-    const message = e.message as Record<string, unknown> | undefined;
-    const content = message?.content;
-    if (Array.isArray(content)) {
-      for (const part of content) {
-        if (part === null || typeof part !== "object") continue;
-        const p = part as Record<string, unknown>;
-        if (p.type === "tool_result") untrusted.push(textOf(p.content));
-        else if (p.type === "text" && e.isMeta !== true && typeof p.text === "string")
-          user.push(p.text);
-      }
-    } else if (typeof content === "string" && e.isMeta !== true) {
-      user.push(content);
     }
   }
   return { userText: user.join("\n"), untrustedText: untrusted.join("\n") };
