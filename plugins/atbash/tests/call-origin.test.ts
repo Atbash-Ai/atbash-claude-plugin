@@ -232,6 +232,24 @@ test("only an absolute, local, regular file is read as the transcript", () => {
   }
 });
 
+// Test audit 2026-10-03 (LOW): the hosts above fail anyway, so they cannot show the refusal itself.
+// Here a real, readable local transcript is named with a network-shaped prefix (\\?\ on Windows,
+// a doubled slash elsewhere): the filesystem would open it, so only the refusal returns null.
+test("a network-shaped path is refused even when it names a readable file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atbash-call-origin-"));
+  try {
+    const file = join(dir, "t.jsonl");
+    writeFileSync(file, userLine("Hello there.") + "\n");
+    assert.notEqual(readTranscriptTail(file), null, "the plain path is read");
+    const backslash = String.fromCharCode(92);
+    const networkShaped =
+      process.platform === "win32" ? `${backslash}${backslash}?${backslash}${file}` : `/${file}`;
+    assert.equal(readTranscriptTail(networkShaped), null, networkShaped);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test(
   "a FIFO in place of the transcript is refused without blocking",
   {
