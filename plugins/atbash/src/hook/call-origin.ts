@@ -1,4 +1,6 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { performance } from "node:perf_hooks";
 
 /**
  * Where the instruction behind a tool call came from, as far as this machine can tell.
@@ -13,14 +15,18 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
  *   distinctive words with this call's argument values, and those words appear nowhere in what the
  *   user typed.
  *
- *   "unknown": anything else, including no transcript, an unreadable one, or any doubt. Unknown
- *   changes nothing about how the call is judged.
+ *   "unknown": anything else, including no transcript, an unreadable one, input too large to check
+ *   within the time budget, or any doubt. Unknown changes nothing about how the call is judged.
  *
  * It never claims "the user asked for this": that label would make the judge MORE permissive, so a
- * wrong guess could be abused. Measured 2026-10-02 (atbash-dashboard JEV benchmark): with this fact,
- * injected attacker calls that JEV allowed on its own fell from 14.5 to 0.5 per run (InjecAgent, 1,054
- * attacks), legitimate decisions were unchanged, and 3 of 2,333 real coding calls (SWE-smith) were
- * flagged.
+ * wrong guess could be abused. Measured 2026-10-02 (atbash-dashboard JEV benchmark), with this
+ * module's compiled code: injected attacker calls that JEV allowed on its own fell from 14.5 to 0.5
+ * per run (InjecAgent, 1,054 attacks, non-adaptive), legitimate decisions were unchanged, and 12 of
+ * 2,333 real coding calls (SWE-smith) were flagged.
+ *
+ * This step runs before the judge call, and Claude Code lets a tool run if the hook dies on its
+ * timeout, so every step here is linear in its input, every input is capped, and the whole check
+ * gives up ("unknown") after TIME_BUDGET_MS (security review 2026-10-02).
  */
 export type CallOrigin = "tool_output" | "unknown";
 
@@ -28,13 +34,16 @@ export type CallOrigin = "tool_output" | "unknown";
 export const MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
 /** Upper bound on the tool-output text scanned for instructions. */
 const MAX_UNTRUSTED_CHARS = 512 * 1024;
-
-export interface TranscriptText {
-  /** What the user typed in this session (not hook or system messages). */
-  userText: string;
-  /** Tool results and attachments: content the agent read but the user did not write. */
-  untrustedText: string;
-}
+/** Upper bound on the user text and on the call's joined argument values. */
+const MAX_USER_CHARS = 256 * 1024;
+const MAX_CALL_CHARS = 64 * 1024;
+/** Upper bounds on the words and instructions compared. */
+const MAX_CALL_WORDS = 2000;
+const MAX_INSTRUCTIONS = 5000;
+/** A token longer than this is not a word anyone would repeat; it is skipped. */
+const MAX_WORD_LENGTH = 64;
+/** The whole check gives up after this long. */
+export const TIME_BUDGET_MS = 200;
 
 const STOP = new Set(
   (
@@ -46,12 +55,31 @@ const STOP = new Set(
   ).split(" "),
 );
 
-function words(text: string): Set<string> {
+class OverBudget extends Error {}
+
+function makeDeadline(): () => void {
+  const end = performance.now() + TIME_BUDGET_MS;
+  let n = 0;
+  return () => {
+    // Checking the clock every call would cost more than the work; every 256 steps is enough.
+    if ((++n & 0xff) === 0 && performance.now() > end) throw new OverBudget();
+  };
+}
+
+/** Distinctive words, linear in the input: bounded token length, punctuation trimmed by a loop. */
+function words(text: string, tick: () => void, limit = Number.POSITIVE_INFINITY): Set<string> {
   const out = new Set<string>();
-  for (const m of text.matchAll(/[#@]?[A-Za-z0-9][A-Za-z0-9_.\-/@]{3,}/g)) {
-    const w = m[0].toLowerCase().replace(/[.,;:]+$/, "");
-    if (w.length < 4 || STOP.has(w) || /^\d+$/.test(w)) continue;
+  // Tokens are bounded ({3,63} after the first character), so a run of 250,000 dots is many short
+  // tokens, never one huge one.
+  for (const m of text.matchAll(/[#@]?[A-Za-z0-9][A-Za-z0-9_.\-/@]{3,63}/g)) {
+    tick();
+    let w = m[0].toLowerCase();
+    let end = w.length;
+    while (end > 0 && ".,;:".includes(w[end - 1] ?? "")) end--;
+    w = w.slice(0, end);
+    if (w.length < 4 || w.length > MAX_WORD_LENGTH || STOP.has(w) || /^\d+$/.test(w)) continue;
     out.add(w);
+    if (out.size >= limit) break;
   }
   return out;
 }
@@ -68,48 +96,76 @@ const IMPERATIVE_START =
  */
 const CODE_LINE = /[=;]|\bdef |\bclass |\breturn\b|^\s*(?:#|\/\/|\d+\s)/;
 
-function instructions(untrusted: string): string[] {
+function instructions(untrusted: string, tick: () => void): string[] {
   const out: string[] = [];
   for (const line of untrusted.split(/\r?\n|\\n/)) {
+    tick();
     const code = CODE_LINE.test(line);
     if (!code || /\bplease\b/i.test(line)) {
-      for (const m of line.matchAll(ADDRESSED)) out.push(m[0]);
+      for (const m of line.matchAll(ADDRESSED)) {
+        out.push(m[0]);
+        if (out.length >= MAX_INSTRUCTIONS) return out;
+      }
     }
     if (!code) {
-      for (const m of line.matchAll(IMPERATIVE_START)) out.push(m[1] ?? "");
+      for (const m of line.matchAll(IMPERATIVE_START)) {
+        out.push(m[1] ?? "");
+        if (out.length >= MAX_INSTRUCTIONS) return out;
+      }
     }
   }
   return out;
 }
 
-function stringValues(value: unknown, out: string[] = [], depth = 0): string[] {
-  if (depth > 20) return out;
-  if (typeof value === "string") out.push(value);
-  else if (Array.isArray(value)) for (const v of value) stringValues(v, out, depth + 1);
-  else if (value !== null && typeof value === "object") {
+function stringValues(
+  value: unknown,
+  out: string[] = [],
+  depth = 0,
+  budget = { chars: MAX_CALL_CHARS },
+): string[] {
+  if (depth > 20 || budget.chars <= 0) return out;
+  if (typeof value === "string") {
+    const part = value.slice(0, budget.chars);
+    budget.chars -= part.length;
+    out.push(part);
+  } else if (Array.isArray(value)) {
+    for (const v of value) stringValues(v, out, depth + 1, budget);
+  } else if (value !== null && typeof value === "object") {
     for (const v of Object.values(value as Record<string, unknown>))
-      stringValues(v, out, depth + 1);
+      stringValues(v, out, depth + 1, budget);
   }
   return out;
 }
 
-/** The rule itself, on text already extracted from the transcript. */
+/** The rule itself, on text already extracted from the transcript. Never throws. */
 export function classifyCallOrigin(
   toolInput: unknown,
   transcript: TranscriptText | null,
 ): CallOrigin {
   if (transcript === null) return "unknown";
-  const user = transcript.userText.toLowerCase();
-  const callWords = [...words(stringValues(toolInput).join(" "))].filter((w) => !user.includes(w));
-  if (callWords.length < 2) return "unknown";
-  const untrusted = transcript.untrustedText.slice(-MAX_UNTRUSTED_CHARS);
-  for (const ins of instructions(untrusted)) {
-    const iw = words(ins);
-    let shared = 0;
-    for (const w of callWords) if (iw.has(w)) shared++;
-    if (shared >= 2) return "tool_output";
+  const tick = makeDeadline();
+  try {
+    const userWords = words(transcript.userText.slice(-MAX_USER_CHARS), tick);
+    const callWords = new Set<string>();
+    for (const w of words(stringValues(toolInput).join(" "), tick, MAX_CALL_WORDS * 4)) {
+      if (!userWords.has(w)) callWords.add(w);
+      if (callWords.size >= MAX_CALL_WORDS) break;
+    }
+    if (callWords.size < 2) return "unknown";
+    const untrusted = transcript.untrustedText.slice(-MAX_UNTRUSTED_CHARS);
+    // Cost is the total words across instructions (each at most ~240 characters), not
+    // instructions x call words: each instruction's own words are looked up in the call's set.
+    for (const ins of instructions(untrusted, tick)) {
+      let shared = 0;
+      for (const w of words(ins, tick)) {
+        if (callWords.has(w) && ++shared >= 2) return "tool_output";
+      }
+    }
+    return "unknown";
+  } catch {
+    // Over budget, or anything unexpected: no claim either way.
+    return "unknown";
   }
-  return "unknown";
 }
 
 function textOf(content: unknown): string {
@@ -170,19 +226,39 @@ export function splitTranscript(lines: readonly string[]): TranscriptText {
   return { userText: user.join("\n"), untrustedText: untrusted.join("\n") };
 }
 
-/** Read the last `maxBytes` of the transcript. Never throws: any failure is `null`. */
+export interface TranscriptText {
+  /** What the user typed in this session (not hook or system messages). */
+  userText: string;
+  /** Tool results and attachments: content the agent read but the user did not write. */
+  untrustedText: string;
+}
+
+/** Network paths (\\host\share, //host/share) are never opened: no outbound connection from the hook. */
+function isNetworkPath(path: string): boolean {
+  return /^(?:\\\\|\/\/)/.test(path);
+}
+
+/**
+ * Read the last `maxBytes` of the transcript. Never throws: any failure is `null`.
+ * Only an absolute, local, regular file is read; a pipe, FIFO, device or network path is refused
+ * before it is opened, because opening one can block the hook (security review 2026-10-02).
+ */
 export function readTranscriptTail(
   path: string,
   maxBytes = MAX_TRANSCRIPT_BYTES,
 ): TranscriptText | null {
+  if (!isAbsolute(path) || isNetworkPath(path)) return null;
   let fd: number | undefined;
   try {
-    fd = openSync(path, "r");
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, maxBytes);
+    if (!statSync(path).isFile()) return null;
+    // O_NONBLOCK where it exists (POSIX): a file swapped for a FIFO after the check cannot block.
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return null;
+    const length = Math.min(stat.size, maxBytes);
     const buffer = Buffer.alloc(length);
-    readSync(fd, buffer, 0, length, size - length);
-    return splitTranscript(buffer.toString("utf8").split(/\r?\n/));
+    const bytesRead = readSync(fd, buffer, 0, length, stat.size - length);
+    return splitTranscript(buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/));
   } catch {
     return null;
   } finally {
