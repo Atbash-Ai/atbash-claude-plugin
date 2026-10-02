@@ -37,16 +37,19 @@ const MAX_UNTRUSTED_CHARS = 512 * 1024;
 /** Upper bound on the user text and on the call's argument values (in total, and per value). */
 const MAX_USER_CHARS = 256 * 1024;
 const MAX_CALL_CHARS = 64 * 1024;
-const MAX_VALUE_CHARS = 4 * 1024;
-/** Upper bound on the call words compared. Instructions are not counted: each is compared as
- * soon as it is found, so decoys cannot crowd out the real one (security re-review 2026-10-03). */
-const MAX_CALL_WORDS = 2000;
+/** First pass over the call: this much of every value, shortest values first. */
+const FIRST_PASS_VALUE_CHARS = 4 * 1024;
 /** Transcript content nested deeper than this is not text anyone wrote; it is skipped. */
 const MAX_CONTENT_DEPTH = 32;
 /** A token longer than this is not a word anyone would repeat; it is skipped. */
 const MAX_WORD_LENGTH = 64;
-/** The whole check gives up after this long. */
-export const TIME_BUDGET_MS = 200;
+/**
+ * The whole check gives up after this long. A hard stop for pathological input only, far below
+ * Claude Code's 35 s hook timeout; the worst case an attacker can build within the 512 KiB window
+ * (a flood of instruction-like lines) takes about 80-130 ms cold, so the budget cannot be used to
+ * suppress the fact (security re-review 2026-10-03).
+ */
+export const TIME_BUDGET_MS = 1000;
 
 const STOP = new Set(
   (
@@ -69,21 +72,51 @@ function makeDeadline(): () => void {
   };
 }
 
-/** Distinctive words, linear in the input: bounded token length, punctuation trimmed by a loop. */
-function words(text: string, tick: () => void, limit = Number.POSITIVE_INFINITY): Set<string> {
-  const out = new Set<string>();
-  // Tokens are bounded ({3,63} after the first character), so a run of 250,000 dots is many short
-  // tokens, never one huge one.
-  for (const m of text.matchAll(/[#@]?[A-Za-z0-9][A-Za-z0-9_.\-/@]{3,63}/g)) {
+const isAlnum = (c: number): boolean => (c >= 97 && c <= 122) || (c >= 48 && c <= 57);
+/** Word characters: a-z 0-9 _ . - / @ # (the text is lower-cased first). */
+const isWordChar = (c: number): boolean =>
+  isAlnum(c) || c === 95 || c === 46 || c === 45 || c === 47 || c === 64 || c === 35;
+/** Trailing punctuation trimmed from a word: . , ; : */
+const isTrailing = (c: number): boolean => c === 46 || c === 44 || c === 59 || c === 58;
+
+/**
+ * Calls `visit` with each word of lower-cased `text`, in one pass over its characters (no regex
+ * match objects: a flood of instruction-like text must stay far inside the time budget). A word is
+ * a run of word characters that starts with a letter or digit (or one "#" / "@" before one), with
+ * trailing ".,;:" trimmed and at most MAX_WORD_LENGTH characters: a longer run keeps its prefix.
+ * `visit` returns true to stop early.
+ */
+function scanWords(text: string, tick: () => void, visit: (word: string) => boolean | void): void {
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    if (!isWordChar(text.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < n && isWordChar(text.charCodeAt(j))) j++;
     tick();
-    let w = m[0].toLowerCase();
-    let end = w.length;
-    while (end > 0 && ".,;:".includes(w[end - 1] ?? "")) end--;
-    w = w.slice(0, end);
-    if (w.length < 4 || w.length > MAX_WORD_LENGTH || STOP.has(w) || /^\d+$/.test(w)) continue;
-    out.add(w);
-    if (out.size >= limit) break;
+    let start = i;
+    // Leading punctuation is not part of a word; one "#" or "@" right before a letter or digit is.
+    while (start < j && !isAlnum(text.charCodeAt(start))) {
+      const c = text.charCodeAt(start);
+      if ((c === 35 || c === 64) && start + 1 < j && isAlnum(text.charCodeAt(start + 1))) break;
+      start++;
+    }
+    let end = Math.min(j, start + MAX_WORD_LENGTH);
+    while (end > start && isTrailing(text.charCodeAt(end - 1))) end--;
+    if (end - start >= 4 && visit(text.slice(start, end)) === true) return;
+    i = j;
   }
+}
+
+/** Distinctive words of `text`: stop words, pure numbers and short words are left out. */
+function words(text: string, tick: () => void): Set<string> {
+  const out = new Set<string>();
+  scanWords(text.toLowerCase(), tick, (w) => {
+    if (!STOP.has(w) && !/^\d+$/.test(w)) out.add(w);
+  });
   return out;
 }
 
@@ -112,44 +145,91 @@ const IMPERATIVE_START = new RegExp(
  */
 const CODE_LINE = /[=;]|\bdef |\bclass |\breturn\b|^\s*(?:#|\/\/|\d+\s)/;
 
-/** Instructions in tool output, yielded one at a time so each is compared as soon as it is found. */
+/**
+ * Instructions in tool output, one line at a time, so each is compared as soon as it is found.
+ * The instruction spans on a line are merged (the two patterns often overlap) and yielded once,
+ * lower-cased, so no text is scanned twice (security re-review 2026-10-03: a flood of
+ * instruction-like lines must not push the check past its time budget).
+ */
 function* instructions(untrusted: string, tick: () => void): Generator<string> {
   for (const line of untrusted.split(/\r?\n|\\n/)) {
     tick();
     const code = CODE_LINE.test(line);
+    const spans: Array<[number, number]> = [];
     if (!code || /\bplease\b/i.test(line)) {
-      for (const m of line.matchAll(ADDRESSED)) yield m[0];
+      for (const m of line.matchAll(ADDRESSED)) spans.push([m.index, m.index + m[0].length]);
     }
     if (!code) {
-      for (const m of line.matchAll(IMPERATIVE_START)) yield m[1] ?? "";
+      for (const m of line.matchAll(IMPERATIVE_START)) {
+        const text = m[1] ?? "";
+        const start = m.index + m[0].length - text.length;
+        spans.push([start, start + text.length]);
+      }
     }
+    if (spans.length === 0) continue;
+    spans.sort((a, b) => a[0] - b[0]);
+    let [start, end] = spans[0] as [number, number];
+    for (const [s, e] of spans.slice(1)) {
+      if (s <= end) end = Math.max(end, e);
+      else {
+        yield line.slice(start, end).toLowerCase();
+        [start, end] = [s, e];
+      }
+    }
+    yield line.slice(start, end).toLowerCase();
   }
 }
 
+/** True when `text` (lower-case) holds at least two distinct words of `callWords`. One pass. */
+function sharesTwoWords(text: string, callWords: ReadonlySet<string>, tick: () => void): boolean {
+  let first: string | undefined;
+  let found = false;
+  scanWords(text, tick, (w) => {
+    if (!callWords.has(w)) return false;
+    if (first === undefined) first = w;
+    else if (w !== first) found = true;
+    return found;
+  });
+  return found;
+}
+
 /**
- * The call's string values, each capped, shortest first: the short values (a recipient, a URL, an
- * account) are the ones that name a target, so a long body listed first cannot use up the budget
- * before them (security re-review 2026-10-03). Every leaf counts against the budget.
+ * The call's string values within MAX_CALL_CHARS. First pass: up to 4 KiB of every value, shortest
+ * values first, so short values that name a target (a recipient, a URL) always count and a long
+ * body cannot crowd them out. Second pass: the rest of the long values, so a target written past
+ * 4 KiB in one value still counts (security re-review 2026-10-03). Every leaf costs budget.
  */
 function stringValues(toolInput: unknown, tick: () => void): string[] {
-  const out: string[] = [];
-  const budget = { chars: MAX_CALL_CHARS };
+  const values: string[] = [];
+  let leaves = 0;
   const walk = (value: unknown, depth: number): void => {
     tick();
-    if (depth > 20 || budget.chars <= 0) return;
-    budget.chars -= 1;
-    if (typeof value === "string") {
-      const part = value.slice(0, Math.min(MAX_VALUE_CHARS, budget.chars));
-      budget.chars -= part.length;
-      out.push(part);
-    } else if (Array.isArray(value)) {
-      for (const v of value) walk(v, depth + 1);
-    } else if (value !== null && typeof value === "object") {
+    if (depth > 20 || leaves >= MAX_CALL_CHARS) return;
+    leaves++;
+    if (typeof value === "string") values.push(value);
+    else if (Array.isArray(value)) for (const v of value) walk(v, depth + 1);
+    else if (value !== null && typeof value === "object") {
       for (const v of Object.values(value as Record<string, unknown>)) walk(v, depth + 1);
     }
   };
   walk(toolInput, 0);
-  return out.sort((a, b) => a.length - b.length);
+  values.sort((a, b) => a.length - b.length);
+  let budget = MAX_CALL_CHARS - leaves;
+  const out: string[] = [];
+  for (const v of values) {
+    if (budget <= 0) break;
+    const part = v.slice(0, Math.min(FIRST_PASS_VALUE_CHARS, budget));
+    budget -= part.length;
+    out.push(part);
+  }
+  for (const v of values) {
+    if (budget <= 0) break;
+    if (v.length <= FIRST_PASS_VALUE_CHARS) continue;
+    const rest = v.slice(FIRST_PASS_VALUE_CHARS, FIRST_PASS_VALUE_CHARS + budget);
+    budget -= rest.length;
+    out.push(rest);
+  }
+  return out;
 }
 
 /** The rule itself, on text already extracted from the transcript. Never throws. */
@@ -161,20 +241,17 @@ export function classifyCallOrigin(
   const tick = makeDeadline();
   try {
     const userWords = words(transcript.userText.slice(-MAX_USER_CHARS), tick);
+    // No word cap: the 64 KiB character budget already bounds the set (about 13K words), and a
+    // cap would let a flood of short values crowd out the target (security re-review 2026-10-03).
     const callWords = new Set<string>();
-    for (const w of words(stringValues(toolInput, tick).join(" "), tick, MAX_CALL_WORDS * 4)) {
+    for (const w of words(stringValues(toolInput, tick).join(" "), tick)) {
       if (!userWords.has(w)) callWords.add(w);
-      if (callWords.size >= MAX_CALL_WORDS) break;
     }
     if (callWords.size < 2) return "unknown";
     const untrusted = transcript.untrustedText.slice(-MAX_UNTRUSTED_CHARS);
-    // Cost is the total words across instructions (each at most ~240 characters), not
-    // instructions x call words: each instruction's own words are looked up in the call's set.
+    // Cost is linear in the instruction text: each word is looked up in the call's set once.
     for (const ins of instructions(untrusted, tick)) {
-      let shared = 0;
-      for (const w of words(ins, tick)) {
-        if (callWords.has(w) && ++shared >= 2) return "tool_output";
-      }
+      if (sharesTwoWords(ins, callWords, tick)) return "tool_output";
     }
     return "unknown";
   } catch {
