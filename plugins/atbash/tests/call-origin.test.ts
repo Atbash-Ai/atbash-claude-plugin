@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,3 +207,43 @@ test("call-origin stays bounded on a huge user text", () => {
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 1000, `took ${elapsed} ms`);
 });
+
+test("only an absolute, local, regular file is read as the transcript", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atbash-call-origin-"));
+  try {
+    assert.equal(readTranscriptTail(dir), null, "a directory");
+    assert.equal(readTranscriptTail("relative/transcript.jsonl"), null, "a relative path");
+    const started = Date.now();
+    assert.equal(
+      readTranscriptTail(String.raw`\\atbash-test.invalid\share\t.jsonl`),
+      null,
+      "a UNC path",
+    );
+    assert.equal(
+      readTranscriptTail("//atbash-test.invalid/share/t.jsonl"),
+      null,
+      "a // network path",
+    );
+    assert.ok(Date.now() - started < 1000, "network paths are refused before any connection");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "a FIFO in place of the transcript is refused without blocking",
+  {
+    skip:
+      process.platform === "win32" ? "named FIFOs need POSIX mkfifo; Linux CI runs this" : false,
+  },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), "atbash-call-origin-"));
+    try {
+      const fifo = join(dir, "transcript.jsonl");
+      execFileSync("mkfifo", [fifo]);
+      assert.equal(callOriginFor({ a: "b" }, fifo), "unknown");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
