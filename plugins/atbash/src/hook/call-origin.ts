@@ -46,8 +46,10 @@ const MAX_WORD_LENGTH = 64;
 /**
  * The whole check gives up after this long. A hard stop for pathological input only, far below
  * Claude Code's 35 s hook timeout; the worst case an attacker can build within the 512 KiB window
- * (a flood of instruction-like lines) takes about 80-130 ms cold, so the budget cannot be used to
- * suppress the fact (security re-review 2026-10-03).
+ * (a flood of instruction-like or very short lines) measured 30-240 ms alone and up to 334 ms with
+ * the whole test suite running in parallel, so the budget cannot be used to suppress the fact
+ * (security re-reviews 2026-10-03). On a host several times slower the check gives up and adds
+ * nothing: the call is judged as it was before this check existed, never allowed more easily.
  */
 export const TIME_BUDGET_MS = 1000;
 
@@ -146,6 +148,8 @@ const IMPERATIVE_START = new RegExp(
 const CODE_LINE = /[=;]|\bdef |\bclass |\breturn\b|^\s*(?:#|\/\/|\d+\s)/;
 /** The shortest text either pattern can match: a three-letter verb plus a six-character tail. */
 const MIN_INSTRUCTION_CHARS = 9;
+/** A code-looking line is still read for an addressed instruction when it says "please". */
+const PLEASE = /\bplease\b/i;
 
 /**
  * Instructions in tool output, one line at a time, so each is compared as soon as it is found.
@@ -183,7 +187,7 @@ function* instructions(untrusted: string, tick: () => void): Generator<string> {
     const line = untrusted.slice(lineStart, lineEnd);
     const code = CODE_LINE.test(line);
     const spans: Array<[number, number]> = [];
-    if (!code || /\bplease\b/i.test(line)) {
+    if (!code || PLEASE.test(line)) {
       ADDRESSED.lastIndex = 0;
       for (let m = ADDRESSED.exec(line); m !== null; m = ADDRESSED.exec(line)) {
         spans.push([m.index, m.index + m[0].length]);
