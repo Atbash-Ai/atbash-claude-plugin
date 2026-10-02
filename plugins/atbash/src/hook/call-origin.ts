@@ -144,6 +144,8 @@ const IMPERATIVE_START = new RegExp(
  * Braces alone do not make a line code: tool output is often JSON, where injections hide.
  */
 const CODE_LINE = /[=;]|\bdef |\bclass |\breturn\b|^\s*(?:#|\/\/|\d+\s)/;
+/** The shortest text either pattern can match: a three-letter verb plus a six-character tail. */
+const MIN_INSTRUCTION_CHARS = 9;
 
 /**
  * Instructions in tool output, one line at a time, so each is compared as soon as it is found.
@@ -152,15 +154,44 @@ const CODE_LINE = /[=;]|\bdef |\bclass |\breturn\b|^\s*(?:#|\/\/|\d+\s)/;
  * instruction-like lines must not push the check past its time budget).
  */
 function* instructions(untrusted: string, tick: () => void): Generator<string> {
-  for (const line of untrusted.split(/\r?\n|\\n/)) {
+  // Lines end at a newline or a literal backslash-n (tool output is often JSON-escaped). They are
+  // found with indexOf, not a regex split, and a line too short to hold an instruction is skipped
+  // before any regex runs: the cost must not grow with the number of lines (security re-review
+  // 2026-10-03: 512K empty lines ran out the budget).
+  const n = untrusted.length;
+  let pos = 0;
+  let nextNewline = untrusted.indexOf("\n");
+  let nextEscaped = untrusted.indexOf("\\n");
+  while (pos <= n) {
+    if (nextNewline !== -1 && nextNewline < pos) nextNewline = untrusted.indexOf("\n", pos);
+    if (nextEscaped !== -1 && nextEscaped < pos) nextEscaped = untrusted.indexOf("\\n", pos);
+    let cut = n;
+    let step = 0;
+    if (nextNewline !== -1 && (nextEscaped === -1 || nextNewline < nextEscaped)) {
+      cut = nextNewline;
+      step = 1;
+    } else if (nextEscaped !== -1) {
+      cut = nextEscaped;
+      step = 2;
+    }
+    const lineStart = pos;
+    let lineEnd = cut;
+    if (step === 1 && lineEnd > lineStart && untrusted.charCodeAt(lineEnd - 1) === 13) lineEnd--;
+    pos = step === 0 ? n + 1 : cut + step;
     tick();
+    if (lineEnd - lineStart < MIN_INSTRUCTION_CHARS) continue;
+    const line = untrusted.slice(lineStart, lineEnd);
     const code = CODE_LINE.test(line);
     const spans: Array<[number, number]> = [];
     if (!code || /\bplease\b/i.test(line)) {
-      for (const m of line.matchAll(ADDRESSED)) spans.push([m.index, m.index + m[0].length]);
+      ADDRESSED.lastIndex = 0;
+      for (let m = ADDRESSED.exec(line); m !== null; m = ADDRESSED.exec(line)) {
+        spans.push([m.index, m.index + m[0].length]);
+      }
     }
     if (!code) {
-      for (const m of line.matchAll(IMPERATIVE_START)) {
+      IMPERATIVE_START.lastIndex = 0;
+      for (let m = IMPERATIVE_START.exec(line); m !== null; m = IMPERATIVE_START.exec(line)) {
         const text = m[1] ?? "";
         const start = m.index + m[0].length - text.length;
         spans.push([start, start + text.length]);
@@ -225,7 +256,10 @@ function stringValues(toolInput: unknown, tick: () => void): string[] {
   for (const v of values) {
     if (budget <= 0) break;
     if (v.length <= FIRST_PASS_VALUE_CHARS) continue;
-    const rest = v.slice(FIRST_PASS_VALUE_CHARS, FIRST_PASS_VALUE_CHARS + budget);
+    // Starts one word length before the first-pass cut, so a word that crosses the cut is read
+    // whole here (security re-review 2026-10-03).
+    const from = FIRST_PASS_VALUE_CHARS - MAX_WORD_LENGTH;
+    const rest = v.slice(from, from + budget);
     budget -= rest.length;
     out.push(rest);
   }
