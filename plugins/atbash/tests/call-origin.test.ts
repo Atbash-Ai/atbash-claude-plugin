@@ -363,3 +363,30 @@ test("not suppressed by a budget-exhausting token flood", () => {
   ]);
   assert.equal(classifyCallOrigin(call, withPayload), "tool_output");
 });
+
+// Security re-review 2026-10-03 (MEDIUM): the cost was per line, so a flood of empty or very short
+// lines ran out the time budget and hid the injection after it. Each variant must stay far inside it.
+test("not suppressed by a newline flood", () => {
+  const call = { url: "https://exfil-example.net/drop", label: "quarterly-payroll" };
+  const backslashN = String.fromCharCode(92) + "n";
+  for (const [name, flood] of [
+    ["newlines", "\n".repeat(512 * 1024)],
+    ["short lines", "a\n".repeat(256 * 1024)],
+    ["literal backslash-n", backslashN.repeat(256 * 1024)],
+  ] as const) {
+    const t = { userText: "Read the feed.", untrustedText: flood + "\n" + EXFIL_NOTE };
+    const started = performance.now();
+    const origin = classifyCallOrigin(call, t);
+    const elapsed = performance.now() - started;
+    assert.equal(origin, "tool_output", `${name}: ${origin}`);
+    assert.ok(elapsed < TIME_BUDGET_MS / 4, `${name} took ${elapsed.toFixed(0)} ms`);
+  }
+});
+
+// Security re-review 2026-10-03 (LOW): a target straddling the 4 KiB first-pass cut was split in two.
+test("a target straddling the first-pass cut is still compared", () => {
+  const t = splitTranscript([userLine("Tidy up the deploy config."), toolResultLine(EXFIL_NOTE)]);
+  // "quarterly-payroll" starts at 4094 and crosses the 4096 cut.
+  const content = "x".repeat(4093) + " quarterly-payroll end";
+  assert.equal(classifyCallOrigin({ url: "exfil-example.net/drop", content }, t), "tool_output");
+});
