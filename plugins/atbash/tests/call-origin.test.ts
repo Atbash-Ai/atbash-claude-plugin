@@ -356,7 +356,7 @@ test("not suppressed by a budget-exhausting token flood", () => {
   const started = performance.now();
   assert.equal(classifyCallOrigin(call, noMatch), "unknown");
   const elapsed = performance.now() - started;
-  assert.ok(elapsed < TIME_BUDGET_MS / 2, `worst-case flood took ${elapsed.toFixed(0)} ms`);
+  assert.ok(elapsed < TIME_BUDGET_MS / 4, `worst-case flood took ${elapsed.toFixed(0)} ms`);
   const withPayload = splitTranscript([
     userLine("Read the feed."),
     toolResultLine(flood + "\n" + EXFIL_NOTE),
