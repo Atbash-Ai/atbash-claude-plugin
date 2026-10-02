@@ -75,7 +75,8 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
   const permissionMode = requireString(parsed, "permission_mode");
 
   // Claude Code omits transcript_path in some hook contexts; when present it
-  // must be a string or null. The transcript is never read either way.
+  // must be a string or null. Only its tail is read, locally, to compute one fact
+  // (call-origin.ts); no transcript text is sent anywhere.
   const transcriptPath = parsed.transcript_path;
   if (
     transcriptPath !== undefined &&

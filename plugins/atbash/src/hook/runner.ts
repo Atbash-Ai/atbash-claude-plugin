@@ -2,6 +2,7 @@ import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
 import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
+import { callOriginFor } from "./call-origin.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 
@@ -61,7 +62,8 @@ export async function evaluatePreToolUse(
   const toolCall: ToolCallInput = {
     toolName: input.tool_name,
     args: input.tool_input,
-    context: buildAtbashContext(input),
+    // One fact about where the call's instruction came from, computed locally (call-origin.ts).
+    context: buildAtbashContext(input, callOriginFor(input.tool_input, input.transcript_path)),
   };
 
   let decision: Decision;

@@ -1,4 +1,12 @@
+import type { CallOrigin } from "./call-origin.js";
 import type { PreToolUseInput } from "./protocol.js";
+
+/**
+ * The fact sent when the call's instruction appears to come from tool output. A fixed sentence:
+ * no transcript text ever leaves the machine. "unknown" adds nothing, so the context is unchanged.
+ */
+export const CALL_ORIGIN_TOOL_OUTPUT =
+  "call_origin=tool_output (the instruction for this call appeared in a tool output, not in the user request)";
 
 /** Claude Code's documented permission modes. Any other value is sent as "other". */
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
@@ -31,13 +39,16 @@ function checkedModel(model: string): string {
  * host and can be influenced by repository settings, so each is sent only when it has the
  * expected shape and as "other" otherwise, and an AWS account id in a model ARN is masked.
  */
-export function buildAtbashContext(input: PreToolUseInput): string {
+export function buildAtbashContext(input: PreToolUseInput, origin: CallOrigin = "unknown"): string {
   const permissionMode = KNOWN_PERMISSION_MODES.has(input.permission_mode)
     ? input.permission_mode
     : "other";
   const parts = ["source=claude-code", `permission_mode=${permissionMode}`];
   if (input.model !== undefined && input.model !== "") {
     parts.push(`model=${checkedModel(input.model)}`);
+  }
+  if (origin === "tool_output") {
+    parts.push(CALL_ORIGIN_TOOL_OUTPUT);
   }
   return parts.join("; ");
 }
