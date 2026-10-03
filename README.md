@@ -57,7 +57,7 @@ With each tool call the hook sends the tool name, its arguments (secrets redacte
 
 The judge context is recorded on a public chain, so it never includes the working directory or the workspace folder name. A folder name can identify a client, and it is text a cloned repository controls.
 
-Tool arguments are a different matter: file paths and commands are sent and recorded as they are (minus redacted secrets) unless your organization enables encryption, so a path inside a tool call can still show a folder name. Records written by earlier plugin versions, which included `workspace=<folder name>` in the context, stay on chain.
+Tool arguments are a different matter. Claude Code's file tools use absolute paths, so the arguments normally carry the full working directory, including your user name and folder names. Arguments and commands are sent as they are, to the judge and to its model provider, and are recorded on chain in plain text unless your organization enables encryption. Secret redaction is best-effort: it matches known secret patterns and cannot catch everything. Records written by earlier plugin versions, which included `workspace=<folder name>` in the context, stay on chain.
 
 ## Legacy manual configuration
 

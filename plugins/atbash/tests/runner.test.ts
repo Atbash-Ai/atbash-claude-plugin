@@ -58,7 +58,9 @@ test("never sends the workspace folder name to the judge", async () => {
     guardReturning({ allow: true, verdict: "ALLOW" }, calls),
   );
 
+  assert.equal(calls.length, 2, "the judge must be asked for both calls");
   const [sent, other] = calls.map((call) => call.context ?? "");
+  assert.equal(sent, "source=claude-code; permission_mode=default; model=claude-opus-5");
   assert.ok(!sent?.includes("acme-bank-merger"), `folder name leaked: ${sent}`);
   assert.ok(!sent?.includes("call_origin=user"), `folder text injected a fact: ${sent}`);
   assert.ok(!sent?.includes("workspace="), `workspace fact still sent: ${sent}`);
