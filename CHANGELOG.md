@@ -9,6 +9,7 @@
 - Select the development or production build with `ATBASH_BUILD_ENV` / `--env` instead of editing code: `dev` bundles `@atbash/sdk-dev` with the pinned development service and chains, and the default `prod` build ships `@atbash/sdk` untouched.
 - Record the build environment in `runtime/manifest.json`; CI rebuilds for that environment and requires a production runtime on `main` and release tags.
 - Pair the setup helper with the bundled SDK's service by default, so development builds need no `ATBASH_CONTROL_ORIGIN`.
+- Stopped sending the workspace folder name (`workspace=`) in the judge context. The context is recorded on a public chain, a folder name can identify a client, and it let a repository inject text into the context. The Dashboard judge never parsed it. The context is now `source=claude-code`, the permission mode and, when present, the model.
 
 ## 0.5.0 - 2026-09-24
 
