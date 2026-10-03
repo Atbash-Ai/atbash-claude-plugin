@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Tell the judge when a tool call's instruction appears to come from tool output (prompt injection). The hook reads the end of the local session transcript and, when an instruction addressed to the agent ("please ...", "ignore previous ...", an imperative sentence) in earlier tool output matches the call and the user never typed those words, adds one fixed fact to the judge context: `call_origin=tool_output`. No transcript text leaves the machine, and the fact can only make the judge more careful. Measured on InjecAgent through the JEV judge: injected attacker calls allowed by JEV alone fell from 14.5 to 0.5 per run (non-adaptive attacks); 12 of 2,333 real coding calls (SWE-smith) were flagged. The check is linear and capped (worst case about 130 ms) and gives up after 1 s, far below the hook timeout, so hostile input can neither stall the hook nor run out the clock to hide an injection; a non-regular or network transcript path is never opened.
+
 ## 0.5.0 - 2026-09-24
 
 - Add browser-approved Claude onboarding sessions with exact, one-time change proposals.

@@ -51,6 +51,12 @@ npm run status --workspace @atbash/claude-plugin
 
 Try a harmless request such as listing the current directory. An `ALLOW` decision lets the call run; `HOLD`, `BLOCK`, invalid configuration, and service errors block it.
 
+## What the hook sends
+
+With each tool call the hook sends the tool name, its arguments (secrets redacted by the SDK), and a short context: `source=claude-code`, the workspace folder name, the permission mode and, when present, the model.
+
+It also reads the end of the local session transcript (at most 2 MB) to compute one fact. When an instruction addressed to the agent appears in earlier tool output (a web page, file, email or command result), matches this call, and was never typed by the user, the context gains `call_origin=tool_output`. That is a sign of prompt injection, and the judge treats the call more carefully. The fact is a fixed sentence: no transcript text is sent anywhere. Without a transcript, or when in doubt, nothing is added.
+
 ## Legacy manual configuration
 
 The guided setup is recommended. If you need to configure an existing agent manually, use `~/.config/atbash/config.json` or environment variables in the process that launches Claude Code:
