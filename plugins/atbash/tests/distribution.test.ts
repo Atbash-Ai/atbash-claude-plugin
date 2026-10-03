@@ -74,15 +74,21 @@ test("marketplace runtime includes every supported native target", () => {
   });
 });
 
-test("shipped runtime never sends the workspace folder name", () => {
+test("shipped runtime sends only fixed, checked facts in the judge context", () => {
   // Claude Code runs the committed runtime, not src, and the judge context is recorded on a
-  // public chain. The builder's fixed facts are pinned, so the check is not vacuous and a fact
-  // added back to that list (however it is spelled) fails too.
+  // public chain. The builder is pinned, so the check is not vacuous: the fixed list holds only
+  // the source and the checked permission mode, the model is sent only through its shape check,
+  // and the workspace fact is gone.
   for (const bundle of ["runtime/pre-tool-use.cjs", "runtime/index.cjs"]) {
     const source = readFileSync(bundle, "utf8");
     assert.match(
       source,
-      /\["source=claude-code",`permission_mode=\$\{[\w$]+\.permission_mode\}`\]/,
+      /\["source=claude-code",`permission_mode=\$\{[\w$]+\.has\([\w$]+\.permission_mode\)\?[\w$]+\.permission_mode:"other"\}`\]/,
+      bundle,
+    );
+    assert.match(
+      source,
+      /\.push\(`model=\$\{[\w$]+\.test\([\w$]+\.model\)\?[\w$]+\.model:"other"\}`\)/,
       bundle,
     );
     assert.doesNotMatch(source, /workspace=/, bundle);
