@@ -57,6 +57,8 @@ With each tool call the hook sends the tool name, its arguments (secrets redacte
 
 The judge context is recorded on a public chain, so it never includes the working directory or the workspace folder name. A folder name can identify a client, and it is text a cloned repository controls.
 
+Tool arguments are a different matter: file paths and commands are sent and recorded as they are (minus redacted secrets) unless your organization enables encryption, so a path inside a tool call can still show a folder name. Records written by earlier plugin versions, which included `workspace=<folder name>` in the context, stay on chain.
+
 ## Legacy manual configuration
 
 The guided setup is recommended. If you need to configure an existing agent manually, use `~/.config/atbash/config.json` or environment variables in the process that launches Claude Code:

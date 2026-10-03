@@ -74,6 +74,17 @@ test("marketplace runtime includes every supported native target", () => {
   });
 });
 
+test("shipped runtime never sends the workspace folder name", () => {
+  // Claude Code runs the committed runtime, not src, and the judge context is recorded on a
+  // public chain. The context builder must be present (so this check is not vacuous) and must
+  // not emit the workspace fact.
+  for (const bundle of ["runtime/pre-tool-use.cjs", "runtime/index.cjs"]) {
+    const source = readFileSync(bundle, "utf8");
+    assert.match(source, /source=claude-code/, bundle);
+    assert.doesNotMatch(source, /workspace=/, bundle);
+  }
+});
+
 test("marketplace package includes setup and management skills", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     files?: string[];
