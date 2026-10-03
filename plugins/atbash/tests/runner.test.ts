@@ -27,7 +27,7 @@ test("allows only a canonical ALLOW decision", async () => {
     {
       toolName: "Bash",
       args: { cmd: "git status --short" },
-      context: "source=claude-code; workspace=example; permission_mode=default",
+      context: "source=claude-code; permission_mode=default",
     },
   ]);
 });
@@ -41,7 +41,7 @@ test("includes the model in Atbash context when the host provides it", async () 
   assert.deepEqual(outcome, { allow: true, source: "atbash" });
   assert.equal(
     calls[0]?.context,
-    "source=claude-code; workspace=example; permission_mode=default; model=claude-opus-5",
+    "source=claude-code; permission_mode=default; model=claude-opus-5",
   );
 });
 
