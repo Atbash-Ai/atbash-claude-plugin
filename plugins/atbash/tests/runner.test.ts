@@ -83,6 +83,29 @@ test("host text in the model or permission mode cannot add facts to the judge co
   assert.equal(calls[0]?.context, "source=claude-code; permission_mode=other; model=other");
 });
 
+test("an AWS account id in a Bedrock model ARN never reaches the judge context", async () => {
+  // A Bedrock inference-profile ARN carries the 12-digit AWS account id, which identifies the
+  // customer; the judge context is recorded on a public chain.
+  const calls: ToolCallInput[] = [];
+  await evaluatePreToolUse(
+    makeHookInput({
+      model:
+        "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-4-1",
+    }),
+    () => guardReturning({ allow: true, verdict: "ALLOW" }, calls),
+  );
+
+  assert.equal(calls.length, 1, "the judge must be asked");
+  assert.ok(
+    !calls[0]?.context?.includes("123456789012"),
+    `account id leaked: ${calls[0]?.context}`,
+  );
+  assert.equal(
+    calls[0]?.context,
+    "source=claude-code; permission_mode=default; model=arn:aws:bedrock:us-east-1:account:inference-profile/us.anthropic.claude-opus-4-1",
+  );
+});
+
 test("known permission modes and real model ids reach the judge unchanged", async () => {
   const modes = ["default", "plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"];
   const models = [
@@ -109,7 +132,10 @@ test("known permission modes and real model ids reach the judge unchanged", asyn
     calls.map((call) => call.context),
     [
       ...modes.map((mode) => `source=claude-code; permission_mode=${mode}`),
-      ...models.map((model) => `source=claude-code; permission_mode=default; model=${model}`),
+      ...models.map(
+        (model) =>
+          `source=claude-code; permission_mode=default; model=${model.replace(/:\d{12}:/, ":account:")}`,
+      ),
     ],
   );
 });
