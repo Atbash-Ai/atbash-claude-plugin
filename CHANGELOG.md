@@ -10,6 +10,7 @@
 - Record the build environment in `runtime/manifest.json`; CI rebuilds for that environment and requires a production runtime on `main` and release tags.
 - Pair the setup helper with the bundled SDK's service by default, so development builds need no `ATBASH_CONTROL_ORIGIN`.
 - Sent the permission mode only when it is a documented Claude Code mode and the model only when it has the shape of a model id; any other value is sent as `other`. Both come from the host and can be influenced by repository settings, and the judge context is recorded on a public chain.
+- Sent the permission mode only when it is a documented Claude Code mode and the model only when it has the shape of a model id; any other value is sent as `other`. A 12-digit AWS account id inside a model ARN is masked as `account`. Both come from the host and can be influenced by repository settings, and the judge context is recorded on a public chain.
 - Stopped sending the workspace folder name (`workspace=`) in the judge context. The context is recorded on a public chain, a folder name can identify a client, and it let a repository inject text into the context. The Dashboard judge never parsed it. The context is now `source=claude-code`, the permission mode and, when present, the model.
 
 ## 0.5.0 - 2026-09-24
