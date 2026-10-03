@@ -51,6 +51,14 @@ npm run status --workspace @atbash/claude-plugin
 
 Try a harmless request such as listing the current directory. An `ALLOW` decision lets the call run; `HOLD`, `BLOCK`, invalid configuration, and service errors block it.
 
+## What the hook sends
+
+With each tool call the hook sends the tool name, its arguments (secrets redacted by the SDK), and a short context: `source=claude-code`, the permission mode and, when present, the model.
+
+The judge context is recorded on a public chain, so it never includes the working directory or the workspace folder name. A folder name can identify a client, and it is text a cloned repository controls. The permission mode is sent only when it is one of Claude Code's documented modes, and the model only when it looks like a model id (letters, digits and `. _ : / @ [ ] -`, at most 128 characters); anything else is sent as `other`, so repository settings cannot add text to the context. A 12-digit AWS account id inside a model ARN (for example a Bedrock inference profile) is sent as `account`. A custom model or gateway name that you chose yourself is sent as it is, so do not put client names in it.
+
+Tool arguments are a different matter. Claude Code's file tools use absolute paths, so the arguments normally carry the full working directory, including your user name and folder names. Arguments and commands are sent as they are, to the judge and to its model provider, and are recorded on chain in plain text unless your organization enables encryption. Secret redaction is best-effort: it matches known secret patterns and cannot catch everything. Records written by earlier plugin versions, which included `workspace=<folder name>` in the context, stay on chain.
+
 ## Legacy manual configuration
 
 The guided setup is recommended. If you need to configure an existing agent manually, use `~/.config/atbash/config.json` or environment variables in the process that launches Claude Code:
