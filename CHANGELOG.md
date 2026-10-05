@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - 2026-09-24
+
+- Add browser-approved Claude onboarding sessions with exact, one-time change proposals.
+- Store agent credentials and host profiles locally with restricted permissions and atomic activation.
+- Support encrypted browser-generated key delivery and loopback-only existing-agent key connection.
+- Route the fail-closed hook and status checks through the selected host profile while preserving legacy configuration.
+
 All notable changes to this project are documented here.
 
 ## 0.4.1 - 2026-09-09

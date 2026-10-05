@@ -1,7 +1,7 @@
 {
   "name": "atbash",
-  "version": "0.4.1",
-  "description": "Automatically guards Claude Code tool calls with fail-closed Atbash safety judgments and provides secure local setup guidance.",
+  "version": "0.5.0",
+  "description": "Guards Claude Code tool calls and provides browser-approved local Atbash onboarding and agent management.",
   "author": {
     "name": "Atbash AI",
     "url": "https://atbash.ai"
