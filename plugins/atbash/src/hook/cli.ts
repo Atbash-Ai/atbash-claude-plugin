@@ -1,9 +1,11 @@
+import type { SetupBootstrap } from "./bootstrap.js";
 import { readHookInput } from "./io.js";
 import { parsePreToolUseInput, serializeDeny } from "./protocol.js";
 import { evaluatePreToolUse, type GuardFactory } from "./runner.js";
 
 export interface PreToolUseCliDependencies {
   createGuard?: GuardFactory;
+  bootstrap?: SetupBootstrap;
 }
 
 export async function executePreToolUse(
@@ -12,7 +14,11 @@ export async function executePreToolUse(
 ): Promise<string> {
   try {
     const input = parsePreToolUseInput(rawInput);
-    const outcome = await evaluatePreToolUse(input, dependencies.createGuard);
+    const outcome = await evaluatePreToolUse(
+      input,
+      dependencies.createGuard,
+      dependencies.bootstrap,
+    );
     return outcome.allow ? "" : serializeDeny(outcome.reason);
   } catch {
     return serializeDeny("Atbash ERROR: the hook input was invalid.");

@@ -39,6 +39,8 @@ The installed plugin includes the SDK runtime and native bindings. No npm instal
 
 Invoke the `atbash-setup` skill and ask Claude Code to start setup. The skill starts a short-lived onboarding session and provides a Connect Atbash link. Sign in and verify your wallet in the browser, then review and approve the exact account, organization, plan, and agent changes. The helper finishes setup and saves the agent key locally under `~/.config/atbash/` with restricted permissions. For an existing agent, it opens a local form for the key; the key is not sent to the dashboard or chat.
 
+Setup works with the plugin enabled. Until an agent is configured, the hook allows only the Atbash setup steps (the setup skill, its helper commands, and the plan file it writes under `~/.config/atbash/plans/`) and denies every other tool call. Once setup activates a profile, every tool call is judged again; `setup continue` reports the new agent's status itself, so no extra judged call is needed. An existing but invalid configuration stays fail closed.
+
 Use the `atbash-manage` skill for later name, purpose, risk, or active-state changes. Each change requires a fresh browser authorization.
 
 ## Check status and test

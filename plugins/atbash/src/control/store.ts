@@ -108,7 +108,10 @@ export class ControlStore {
     this.root = resolve(root);
   }
 
-  private path(kind: "pending" | "credentials" | "profiles" | "hosts", id: string): string {
+  private path(
+    kind: "pending" | "credentials" | "profiles" | "hosts" | "plans",
+    id: string,
+  ): string {
     assertSafeId(id, `${kind} identifier`);
     const path = join(this.root, kind, `${id}.json`);
     if (!inside(this.root, path)) throw new Error("Sensitive state path escaped its root.");
@@ -125,6 +128,28 @@ export class ControlStore {
 
   async removeJob(jobId: string): Promise<void> {
     await rm(this.path("pending", jobId), { force: true });
+    await rm(this.path("plans", jobId), { force: true });
+  }
+
+  /** The one location a job's non-secret plan is read from; the setup hook allows writes only here. */
+  planPath(jobId: string): string {
+    return this.path("plans", jobId);
+  }
+
+  async preparePlanDirectory(): Promise<void> {
+    await secureDirectory(join(this.root, "plans"));
+  }
+
+  async readPlan(jobId: string): Promise<unknown> {
+    const path = this.planPath(jobId);
+    await rejectSymlink(path);
+    const handle = await open(path, "r");
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error("The plan is not a regular file.");
+      return JSON.parse(await handle.readFile("utf8")) as unknown;
+    } finally {
+      await handle.close();
+    }
   }
 
   async activate(input: { credential: AgentCredential; profile: AgentProfile }): Promise<void> {

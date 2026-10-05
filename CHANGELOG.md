@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Let guided setup run with the plugin enabled: while no configuration exists, the hook allows only the exact setup skill, helper commands, and plan file write, and denies everything else with a setup hint.
+- Report the new agent's status from `setup continue`, so verifying setup needs no separately judged status call.
+- Accept setup and management plans only from the job's `planPath` under `~/.config/atbash/plans/`.
+
 ## 0.5.0 - 2026-09-24
 
 - Add browser-approved Claude onboarding sessions with exact, one-time change proposals.
