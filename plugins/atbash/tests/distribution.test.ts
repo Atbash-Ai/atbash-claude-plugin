@@ -6,6 +6,23 @@ import test from "node:test";
 
 import { makeHookInput } from "./fixtures.js";
 
+/**
+ * The model reaches the context only through the checked-model function: the push names a function
+ * whose body tests the model-id shape, masks an AWS account id and falls back to "other".
+ */
+function assertCheckedModel(source: string, bundle: string): void {
+  const call = /`model=\$\{([\w$]+)\([\w$]+\.model\)\}`/.exec(source);
+  assert.ok(call, `${bundle}: the model is not sent through a checking function`);
+  const name = call[1]!.replace(/\$/g, "\\$");
+  assert.match(
+    source,
+    new RegExp(
+      `function ${name}\\(([\\w$]+)\\)\\{return [\\w$]+\\.test\\(\\1\\)\\?\\1\\.replace\\([\\w$]+,":account:"\\):"other"\\}`,
+    ),
+    bundle,
+  );
+}
+
 test("built hook is self-contained and fails closed", () => {
   assert.equal(existsSync(`dist/native/${process.platform}-${process.arch}/atbash.node`), true);
 
@@ -72,6 +89,23 @@ test("marketplace runtime includes every supported native target", () => {
       permissionDecisionReason: "Atbash ERROR: configuration is missing or invalid.",
     },
   });
+});
+
+test("shipped runtime sends only fixed, checked facts in the judge context", () => {
+  // Claude Code runs the committed runtime, not src, and the judge context is recorded on a
+  // public chain. The builder is pinned, so the check is not vacuous: the fixed list holds only
+  // the source and the checked permission mode, the model is sent only through its shape check
+  // with any AWS account id masked, and the workspace fact is gone.
+  for (const bundle of ["runtime/pre-tool-use.cjs", "runtime/index.cjs"]) {
+    const source = readFileSync(bundle, "utf8");
+    assert.match(
+      source,
+      /\["source=claude-code",`permission_mode=\$\{[\w$]+\.has\([\w$]+\.permission_mode\)\?[\w$]+\.permission_mode:"other"\}`\]/,
+      bundle,
+    );
+    assertCheckedModel(source, bundle);
+    assert.doesNotMatch(source, /workspace=/, bundle);
+  }
 });
 
 test("marketplace package includes setup and management skills", () => {
