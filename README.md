@@ -1,6 +1,6 @@
 # Atbash Safety Plugin for Claude Code
 
-Atbash Safety checks Claude Code tool calls through a `PreToolUse` hook. The plugin bundles `@atbash/sdk@0.9.2` and its native bindings, configured for the Atbash production service at `atbash.ai`; users do not need to install the SDK separately or enter chain settings.
+Atbash Safety checks Claude Code tool calls through a `PreToolUse` hook. The `dev` branch bundles `@atbash/sdk@0.10.10-dev.0` and its native bindings. The bundled SDK is configured for the Atbash development service; users do not need to install the SDK separately or enter chain settings.
 
 ## Requirements
 
@@ -8,25 +8,27 @@ Atbash Safety checks Claude Code tool calls through a `PreToolUse` hook. The plu
 - Node.js 22.13.0 or newer
 - macOS arm64, Linux x64/arm64 (glibc), or Windows x64
 
-## Install
+## Install the development plugin
 
-Add this repository as a Claude Code marketplace and install the plugin:
+Claude Code marketplace sources do not select a Git branch in the install command. Clone the `dev` branch, add that checkout as a local marketplace, and install the plugin:
 
 ```bash
-claude plugin marketplace add Atbash-Ai/atbash-claude-plugin
+git clone --branch dev --depth 1 https://github.com/Atbash-Ai/atbash-claude-plugin.git ~/atbash-claude-plugin-dev
+claude plugin marketplace add ~/atbash-claude-plugin-dev
 claude plugin install atbash@atbash-ai
 ```
 
 Inside Claude Code, the equivalent commands are:
 
 ```text
-/plugin marketplace add Atbash-Ai/atbash-claude-plugin
+/plugin marketplace add ~/atbash-claude-plugin-dev
 /plugin install atbash@atbash-ai
 ```
 
-To update later:
+To update the dev build later:
 
 ```bash
+git -C ~/atbash-claude-plugin-dev pull --ff-only
 claude plugin marketplace update atbash-ai
 claude plugin update atbash@atbash-ai
 ```
@@ -70,4 +72,4 @@ npm run verify
 npm run build:marketplace
 ```
 
-`build:marketplace` regenerates the committed runtime from the pinned SDK version. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) for development and security information.
+`build:marketplace` regenerates the committed runtime from the pinned development SDK version. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) for development and security information.
