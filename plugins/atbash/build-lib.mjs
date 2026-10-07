@@ -22,6 +22,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
       // below); the bundled hook it loads is pre-tool-use-main.cjs.
       "pre-tool-use-main": "src/pre-tool-use.ts",
       status: "src/status.ts",
+      control: "src/control.ts",
     },
     format: "cjs",
     legalComments: "none",
@@ -56,7 +57,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     target: "node22",
   });
 
-  for (const entry of ["index", "pre-tool-use-main", "status"]) {
+  for (const entry of ["index", "pre-tool-use-main", "status", "control"]) {
     const outputPath = join(outdir, `${entry}.cjs`);
     const source = await readFile(outputPath, "utf8");
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");
@@ -73,6 +74,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     ["pre-tool-use", 0o644],
     ["pre-tool-use-main", 0o755],
     ["status", 0o755],
+    ["control", 0o755],
   ]) {
     await chmod(join(outdir, `${entry}.cjs`), mode);
   }
@@ -89,7 +91,33 @@ const target = targets[key];
 if (target === undefined) {
   throw new Error("Atbash does not publish a native SDK for " + key + ".");
 }
-module.exports = require(target);
+const native = require(target);
+const chains = {
+  public: {
+    blockchainRid: "02668c5218871f69a93cc0f7032dcffe06ef0d35ef2f0b07a92a3d83a3f23a7d",
+    nodeUrls: [
+      "https://node0.testnet.chromia.com:7740",
+      "https://node1.testnet.chromia.com:7740",
+      "https://node3.testnet.chromia.com:7740",
+    ],
+  },
+  private: {
+    blockchainRid: "2603569ae8dc3f254323f719c8d4347bba964e874e781291f8474236be8b6493",
+    nodeUrls: [
+      "https://node0-pvn-testnet.dynamic.chromia.dev",
+      "https://node1-pvn-testnet.dynamic.chromia.dev",
+      "https://node2-pvn-testnet.dynamic.chromia.dev",
+    ],
+  },
+};
+module.exports = {
+  ...native,
+  DEFAULT_ENDPOINT: "https://chromia-verified-ai-dev-two.vercel.app",
+  DEFAULT_BLOCKCHAIN_RID: chains.public.blockchainRid,
+  DEFAULT_PRIVATE_BLOCKCHAIN_RID: chains.private.blockchainRid,
+  defaultChromiaNodeUrls: () => [...chains.public.nodeUrls],
+  defaultPrivateNodeUrls: () => [...chains.private.nodeUrls],
+};
 `;
 
   await writeFile(join(outdir, "atbash-native.cjs"), source, "utf8");

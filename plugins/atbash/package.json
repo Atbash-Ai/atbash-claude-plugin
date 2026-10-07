@@ -1,9 +1,9 @@
 {
   "name": "@atbash/claude-plugin",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "license": "MIT",
   "private": true,
-  "description": "Atbash safety enforcement for Claude Code.",
+  "description": "Atbash safety enforcement and secure local onboarding for Claude Code.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -23,6 +23,6 @@
     "status": "node dist/status.cjs"
   },
   "dependencies": {
-    "@atbash/sdk": "0.9.1"
+    "@atbash/sdk": "0.10.10-dev.0"
   }
 }

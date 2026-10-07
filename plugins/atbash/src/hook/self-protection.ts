@@ -373,6 +373,13 @@ function expandHome(path: string, context: SelfProtectionContext): string {
 function toAbsolute(path: string, context: SelfProtectionContext): string {
   const expanded = expandHome(path, context);
   if (isAbsolute(expanded) || /^[a-z]:[\\/]/i.test(expanded)) return expanded;
+  // `\\?\` / `\\.\` / `\??\` in front of an absolute path names that path (normalizePath drops the
+  // prefix too). POSIX `isAbsolute` does not see through it, and joining it onto cwd would move it
+  // off every protected root.
+  const unprefixed = expanded.replace(/^(?:[\\/]{2}[?.]|[\\/]\?\?)[\\/]/, "");
+  if (unprefixed !== expanded && (isAbsolute(unprefixed) || /^[a-z]:[\\/]/i.test(unprefixed))) {
+    return unprefixed;
+  }
   return join(context.cwd, expanded);
 }
 

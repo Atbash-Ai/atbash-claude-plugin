@@ -42,6 +42,7 @@ test("marketplace runtime includes every supported native target", () => {
 
   assert.equal(manifest.sdkVersion, packageJson.dependencies?.["@atbash/sdk"]);
   assert.equal(existsSync("runtime/licenses/atbash-sdk.LICENSE"), true);
+  assert.equal(existsSync("runtime/control.cjs"), true);
 
   for (const platform of platforms) {
     const nativePath = `runtime/native/${platform}/atbash.node`;
@@ -75,13 +76,19 @@ test("marketplace runtime includes every supported native target", () => {
   });
 });
 
-test("marketplace package includes the setup skill", () => {
+test("marketplace package includes setup and management skills", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     files?: string[];
   };
   const skill = readFileSync("skills/atbash-setup/SKILL.md", "utf8");
+  const manageSkill = readFileSync("skills/atbash-manage/SKILL.md", "utf8");
+  const setupLauncher = readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8");
 
   assert.equal(packageJson.files?.includes("skills"), true);
   assert.match(skill, /^---\r?\nname: atbash-setup\r?\n/);
   assert.doesNotMatch(skill, /\[TODO:/);
+  assert.match(skill, /--host claude/);
+  assert.match(manageSkill, /^---\r?\nname: atbash-manage\r?\n/);
+  assert.match(manageSkill, /--host claude/);
+  assert.match(setupLauncher, /runtime\/control\.cjs/);
 });
