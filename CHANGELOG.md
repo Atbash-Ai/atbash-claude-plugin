@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Select the development or production build with `ATBASH_BUILD_ENV` / `--env` instead of editing code: `dev` bundles `@atbash/sdk-dev` with the pinned development service and chains, and the default `prod` build ships `@atbash/sdk` untouched.
+- Record the build environment in `runtime/manifest.json`; CI rebuilds for that environment and requires a production runtime on `main` and release tags.
+- Pair the setup helper with the bundled SDK's service by default, so development builds need no `ATBASH_CONTROL_ORIGIN`.
+
 ## 0.5.0 - 2026-09-24
 
 - Add browser-approved Claude onboarding sessions with exact, one-time change proposals.
