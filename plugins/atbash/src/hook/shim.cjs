@@ -537,6 +537,17 @@ if (decided) {
   process.on("unhandledRejection", () => {
     deny("Atbash ERROR: the hook crashed before a decision was returned.");
   });
+  // A hook stopped by a signal ends without running exit listeners under node's default action -
+  // no output and a non-0/2 exit, which the host treats as non-blocking, so the tool call ran. A
+  // catchable signal is a deny like any other end without a decision. deny() returns without
+  // exiting only when a decision is already on its way or on stdout: then end as the signal would
+  // have, without a second answer. SIGKILL cannot be caught; that case stays with the host.
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    process.on(signal, () => {
+      deny("Atbash ERROR: the hook was stopped before a decision was returned.");
+      process.exit();
+    });
+  }
 
   try {
     require("./pre-tool-use-main.cjs");

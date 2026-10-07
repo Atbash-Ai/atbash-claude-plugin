@@ -199,6 +199,43 @@ test("a runtime that crashes asynchronously still denies with exit 0", async () 
   }
 });
 
+test(
+  "a hook stopped by SIGTERM, SIGINT or SIGHUP before deciding still denies with exit 0",
+  { skip: process.platform === "win32" ? "POSIX signals" : false },
+  async () => {
+    // Under node's default action a signal ends the process with no output and no exit listeners:
+    // the host reads a non-blocking error and runs the tool. Measured in Claude Code 2.1.292.
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(
+        join(d, "pre-tool-use-main.cjs"),
+        'process.stderr.write("waiting\\n");\nsetInterval(() => {}, 1000);\n',
+      );
+    });
+    try {
+      for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+        const result = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+          const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+            cwd: dir,
+            env: { PATH: process.env.PATH, HOME: dir },
+          });
+          let stdout = "";
+          child.stdout.on("data", (d) => (stdout += d));
+          child.stderr.on("data", (d) => {
+            if (String(d).includes("waiting")) child.kill(signal);
+          });
+          child.stdin.end(JSON.stringify(makeHookInput()));
+          child.on("close", (code) => resolve({ code, stdout }));
+        });
+        assert.equal(result.code, 0, `${signal}: exit ${result.code}`);
+        assert.match(result.stdout, DENY_SHAPE, `${signal}: ${result.stdout}`);
+        assert.match(result.stdout, /was stopped/, `${signal}: ${result.stdout}`);
+      }
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
+
 test("a runtime whose promise rejects unhandled still denies with exit 0", async () => {
   const dir = withDamagedRuntime((d) => {
     writeFileSync(join(d, "pre-tool-use-main.cjs"), 'Promise.reject(new Error("rejected"));\n');
