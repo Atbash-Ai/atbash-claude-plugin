@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
+import { getAtbashStatus } from "../atbash/status.js";
 import { ControlClient, resolveControlOrigin } from "./client.js";
 import { decryptAgentKey, generateKeyDeliveryPair } from "./keys.js";
 import {
@@ -13,8 +14,31 @@ import {
   type PublicJobView,
   type SessionView,
   type SetupInventory,
+  type AgentStatusSummary,
 } from "./protocol.js";
 import { ControlStore, type AgentCredential, type AgentProfile, type PendingJob } from "./store.js";
+
+export type AgentStatusCheck = () => Promise<AgentStatusSummary>;
+
+async function defaultStatusCheck(): Promise<AgentStatusSummary> {
+  const status = await getAtbashStatus();
+  return status.ready
+    ? { ready: true, state: status.state }
+    : { ready: false, state: status.state, message: status.message };
+}
+
+// Checked inside the helper so verifying setup never needs a separately judged tool call.
+async function activeAgentStatus(check: AgentStatusCheck): Promise<AgentStatusSummary> {
+  try {
+    return await check();
+  } catch {
+    return {
+      ready: false,
+      state: "service_error",
+      message: "Atbash status could not be retrieved. The profile is still active.",
+    };
+  }
+}
 
 export const CONTROL_CLIENT_VERSION = "0.5.0";
 
@@ -49,6 +73,8 @@ function view(input: {
   proposal?: ProposalView | null;
   execution?: ExecutionView | null;
   message?: string;
+  planPath?: string;
+  agentStatus?: AgentStatusSummary;
 }): PublicJobView {
   return {
     schemaVersion: 1,
@@ -59,6 +85,7 @@ function view(input: {
     verificationCode: input.job.verificationCode,
     verificationUri: input.job.verificationUri,
     expiresAt: input.job.expiresAt,
+    ...(input.planPath ? { planPath: input.planPath } : {}),
     nextAction: nextAction({
       session: input.session,
       discovery: input.discovery,
@@ -69,6 +96,7 @@ function view(input: {
     ...(input.discovery ? { discovery: input.discovery } : {}),
     ...(input.proposal ? { proposal: input.proposal } : {}),
     ...(input.execution ? { execution: publicExecution(input.execution) } : {}),
+    ...(input.agentStatus ? { agentStatus: input.agentStatus } : {}),
     ...(input.message ? { message: input.message } : {}),
   };
 }
@@ -111,6 +139,7 @@ export async function startControlJob(input: {
     keyDeliveryPrivateKeyPem: keyDelivery.privateKeyPem,
   };
   await store.saveJob(job);
+  await store.preparePlanDirectory();
   return {
     schemaVersion: 1,
     jobId: job.jobId,
@@ -120,6 +149,7 @@ export async function startControlJob(input: {
     verificationCode: created.verificationCode,
     verificationUri: created.verificationUri,
     expiresAt: created.expiresAt,
+    planPath: store.planPath(job.jobId),
     nextAction: "OPEN_BROWSER",
   };
 }
@@ -144,7 +174,14 @@ export async function inspectControlJob(
     job.executionId = execution.id;
     await store.saveJob(job);
   }
-  return view({ job, session, discovery, proposal, execution });
+  return view({
+    job,
+    session,
+    discovery,
+    proposal,
+    execution,
+    planPath: store.planPath(job.jobId),
+  });
 }
 
 export async function submitControlPlan(
@@ -152,18 +189,27 @@ export async function submitControlPlan(
   inputPath: string,
   store = new ControlStore(),
 ): Promise<PublicJobView> {
+  const planPath = store.planPath(jobId);
+  if (resolve(inputPath) !== planPath)
+    throw new Error(`Write the plan to ${planPath} and pass that path to --input.`);
   const job = await store.readJob(jobId);
   const client = clientFor(job);
   const session = await client.getSession(job.sessionId, job.sessionSecret);
   if (!session.identityBound)
     throw new Error("Open the verification URL and verify the wallet before preparing a plan.");
-  const actions = parseProposalActions(JSON.parse(await readFile(inputPath, "utf8")));
+  const actions = parseProposalActions(await store.readPlan(jobId));
   validateProposalActionsForPurpose(actions, job.purpose);
   const proposal = await client.submitProposal(job.sessionId, job.sessionSecret, actions);
   job.proposalId = proposal.id;
   await store.saveJob(job);
   const discovery = await client.getResources(job.sessionId, job.sessionSecret);
-  return view({ job, session: { ...session, status: "awaiting_approval" }, discovery, proposal });
+  return view({
+    job,
+    session: { ...session, status: "awaiting_approval" },
+    discovery,
+    proposal,
+    planPath,
+  });
 }
 
 export async function activateCompletedJob(
@@ -228,6 +274,7 @@ export async function activateCompletedJob(
 export async function continueControlJob(
   jobId: string,
   store = new ControlStore(),
+  checkStatus: AgentStatusCheck = defaultStatusCheck,
 ): Promise<PublicJobView> {
   const job = await store.readJob(jobId);
   if (job.activatedProfileId) {
@@ -241,6 +288,7 @@ export async function continueControlJob(
       verificationUri: job.verificationUri,
       expiresAt: job.expiresAt,
       nextAction: "DONE",
+      agentStatus: await activeAgentStatus(checkStatus),
       message: `Profile ${job.activatedProfileId} is active for ${job.host}.`,
     };
   }
@@ -266,6 +314,7 @@ export async function continueControlJob(
     session,
     proposal,
     execution,
+    agentStatus: await activeAgentStatus(checkStatus),
     message: `Profile ${profileId} is active for ${job.host}.`,
   });
 }

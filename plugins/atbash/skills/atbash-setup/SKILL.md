@@ -9,23 +9,25 @@ Use the bundled control helper for onboarding. Keep private keys outside the con
 
 ## Start or resume setup
 
-Run the helper through this skill's `scripts/atbash-control.mjs` launcher:
+Run the helper through this skill's `scripts/atbash-control.mjs` launcher, using the absolute skill directory:
 
 ```text
-node <skill-directory>/scripts/atbash-control.mjs setup start --host claude
+node "<skill-directory>/scripts/atbash-control.mjs" setup start --host claude
 ```
 
-The result contains a public `verificationUri`, verification code, and opaque job ID. Show the URL and code to the user and ask them to complete wallet verification in **Connect Atbash**. Never expose files under `~/.config/atbash/pending`, `credentials`, `profiles`, or `hosts`.
+Until setup activates a profile, the hook allows only these setup steps and denies everything else with "Atbash is not set up yet". Run each helper command as one plain command in exactly this form: no `cd`, `&&`, `;`, pipes, redirection, environment-variable prefixes, or command substitution, and no `--service` option. Commands in any other form are denied.
+
+The result contains a public `verificationUri`, verification code, opaque job ID, and `planPath`. Show the URL and code to the user and ask them to complete wallet verification in **Connect Atbash**, then come back to the conversation. Never expose files under `~/.config/atbash/pending`, `credentials`, `profiles`, or `hosts`.
 
 Inspect progress with `setup inspect <job-id>` through the same launcher. Follow `nextAction`:
 
 - `OPEN_BROWSER`: the user completes sign-in and wallet verification in the provided page.
-- `PREPARE_PLAN`: use discovery to create a non-secret plan JSON file containing only `actions`, then run `setup plan <job-id> --input <path>`.
+- `PREPARE_PLAN`: use discovery to build a non-secret plan JSON containing only `actions`. Write it with the Write tool to the job's `planPath` (the only location the helper accepts), then run `setup plan <job-id> --input <planPath>`.
 - `REVIEW_IN_BROWSER`: the user reviews and signs the exact proposal in Connect Atbash. Do not approve it for them.
 - `WAIT`: inspect again after the returned poll interval; do not poll after expiry.
 - `ACTIVATE`: run `setup continue <job-id>` to decrypt the delivered key locally and activate the profile.
 - `RECOVER`: report completed and failed steps. Any replacement mutation requires a new setup or management session and approval.
-- `DONE`: run status, then verify one harmless host tool call.
+- `DONE`: `setup continue` already reports the new agent's `agentStatus`. Report setup as finished only when `nextAction` is `DONE` and `agentStatus.state` is `ready`. A session `status` of `completed` alone does not mean the profile is active. Do not run another command to check status: from this point every tool call is judged under the new agent's policy, and a blocked call can jail the agent. To confirm enforcement, make one harmless call that fits the agent's purpose, such as reading a file in the workspace with the Read tool rather than a shell command.
 
 For a new public setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, purposes, risks, or agent names.
 
@@ -41,13 +43,13 @@ List profiles with `profile list --host claude`, select one with `profile switch
 
 If there is no selected profile, the hook keeps the legacy SDK configuration behavior. If `ATBASH_AGENT_KEY` or `ATBASH_ORG_NAME` conflicts with a selected profile, report the conflict and ask the user to remove or correct the override locally. Never inspect the conflicting key.
 
-If an already-enabled fail-closed hook blocks setup actions, tell the user to disable the Atbash plugin, run the bundled launcher once outside the guarded session, restart Claude Code, and re-enable the plugin. Do not describe this as bypassing an individual verdict.
+Setup runs with the hook enabled; do not ask the user to disable the plugin, which also removes this skill. If the hook denies a setup step because a configuration already exists (invalid, jailed, or not registered), report the exact denial and tell the user they can disconnect the current profile from their own terminal with `node "<skill-directory>/scripts/atbash-control.mjs" profile disconnect --host claude`, then start setup again. Do not describe this as bypassing an individual verdict.
 
 To deactivate Atbash, tell the user to disable or uninstall the plugin from the `/plugin` menu (or run `claude plugin disable atbash` in their own terminal). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls. Never try to run that command, edit Claude Code settings, the Atbash config file or the plugin's files, or change `ATBASH_*` variables yourself: the hook denies those tool calls deterministically, before the judge, by design. Tell the user to make the change outside the agent instead.
 
 ## Verify and troubleshoot
 
-Use a harmless tool call such as listing the current directory to verify activation. Status reports `ready`, `configuration_error`, `agent_not_registered`, `agent_jailed`, or `service_error`; it never prints the private key.
+Use a harmless tool call that fits the agent's purpose, such as reading a workspace file, to verify activation. Status reports `ready`, `configuration_error`, `agent_not_registered`, `agent_jailed`, or `service_error`; it never prints the private key.
 
 - `ALLOW` with `allow: true`: Claude Code continues the pending tool call.
 - `HOLD`: Claude Code blocks this attempt pending operator review; the user explicitly retries after approval.

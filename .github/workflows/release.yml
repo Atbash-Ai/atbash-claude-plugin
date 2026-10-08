@@ -56,6 +56,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Require a production runtime
+        run: node plugins/atbash/runtime-environment.mjs --require prod
+
       - name: Verify committed marketplace runtime
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 

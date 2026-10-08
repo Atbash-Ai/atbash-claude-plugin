@@ -151,41 +151,34 @@ test("a local judge whose ALLOW is unsigned or signed by another key is denied",
   }
 });
 
-// SDK 0.10.10-dev.0 (bundled on dev) drops the judge's `allow` field from JudgeResult, so the hook
-// cannot observe allow:false here; see requireJudgeAllow in src/atbash/guard.ts and the CHANGELOG.
-// Re-enable when the bundled SDK exposes the field again.
-test(
-  "a judge ALLOW with allow:false is denied",
-  { skip: "the bundled SDK 0.10.10-dev.0 does not expose the judge's allow field" },
-  async () => {
-    // A signed answer that contradicts itself: verdict ALLOW, action_type allow, allow false. The
-    // SDK's auditToolCall maps it to a permit from action_type alone; the hook must not.
-    const judge = await startLocalJudge({ allowField: false });
-    try {
-      await withHome(async (home) => {
-        const result = await runBuiltHook(
-          makeHookInput(),
-          { ...judge.env, ATBASH_AGENT_KEY: generateKeypair().priv_key },
-          home,
-        );
-        assert.equal(result.code, 0, result.stderr);
-        assert.match(
-          result.stdout,
-          DENY_SHAPE,
-          `an allow:false answer was a permit: ${result.stdout}`,
-        );
-        assert.match(result.stdout, /did not grant permission/, result.stdout);
-        assert.equal(
-          judged(judge.hits),
-          true,
-          `the judge was not consulted: ${judge.hits.join(", ")}`,
-        );
-      });
-    } finally {
-      await judge.close();
-    }
-  },
-);
+test("a judge ALLOW with allow:false is denied", async () => {
+  // A signed answer that contradicts itself: verdict ALLOW, action_type allow, allow false. The
+  // SDK's auditToolCall maps it to a permit from action_type alone; the hook must not.
+  const judge = await startLocalJudge({ allowField: false });
+  try {
+    await withHome(async (home) => {
+      const result = await runBuiltHook(
+        makeHookInput(),
+        { ...judge.env, ATBASH_AGENT_KEY: generateKeypair().priv_key },
+        home,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        DENY_SHAPE,
+        `an allow:false answer was a permit: ${result.stdout}`,
+      );
+      assert.match(result.stdout, /allow was not true/, result.stdout);
+      assert.equal(
+        judged(judge.hits),
+        true,
+        `the judge was not consulted: ${judge.hits.join(", ")}`,
+      );
+    });
+  } finally {
+    await judge.close();
+  }
+});
 
 test("a remote https judge with a config-file verify key is refused without the flag", async () => {
   // What an agent with file access could plant: its own https judge and its own signing key, both

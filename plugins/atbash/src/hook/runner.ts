@@ -1,6 +1,7 @@
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import { createAtbashGuard, GuardConfigError, type ToolCallGuard } from "../atbash/guard.js";
+import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 import {
@@ -14,7 +15,7 @@ import {
 export type GuardFactory = () => ToolCallGuard;
 
 export type HookOutcome =
-  | { allow: true; source: "atbash" }
+  | { allow: true; source: "atbash" | "setup-bootstrap" }
   | { allow: false; reason: string; verdict: "HOLD" | "BLOCK" | "ERROR" };
 
 function formatReference(toolCallId: string | undefined): string {
@@ -45,6 +46,7 @@ function denyFromDecision(decision: Decision): HookOutcome {
 export async function evaluatePreToolUse(
   input: PreToolUseInput,
   createGuard: GuardFactory = createAtbashGuard,
+  bootstrap: SetupBootstrap = createSetupBootstrap(),
   protection: SelfProtectionContext = defaultSelfProtectionContext(input.cwd),
 ): Promise<HookOutcome> {
   // Local and deterministic, before the judge or even the configuration: a call that would switch
@@ -54,6 +56,12 @@ export async function evaluatePreToolUse(
   try {
     hit = checkSelfProtection(input.tool_name, input.tool_input, protection);
   } catch {
+    // Only a missing configuration enters setup mode; an invalid one stays fail closed.
+    if (!bootstrap.hasConfiguration()) {
+      return bootstrap.isSetupCall(input)
+        ? { allow: true, source: "setup-bootstrap" }
+        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+    }
     return {
       allow: false,
       verdict: "ERROR",
@@ -68,13 +76,20 @@ export async function evaluatePreToolUse(
   try {
     guard = createGuard();
   } catch (error) {
+    // A refused judge endpoint is a configuration the user set, never "not set up yet".
+    if (error instanceof GuardConfigError) {
+      return { allow: false, verdict: "ERROR", reason: error.message };
+    }
+    // Only a missing configuration enters setup mode; an invalid one stays fail closed.
+    if (!bootstrap.hasConfiguration()) {
+      return bootstrap.isSetupCall(input)
+        ? { allow: true, source: "setup-bootstrap" }
+        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+    }
     return {
       allow: false,
       verdict: "ERROR",
-      reason:
-        error instanceof GuardConfigError
-          ? error.message
-          : "Atbash ERROR: configuration is missing or invalid.",
+      reason: "Atbash ERROR: configuration is missing or invalid.",
     };
   }
 

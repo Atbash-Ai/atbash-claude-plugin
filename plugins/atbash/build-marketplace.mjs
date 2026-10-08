@@ -2,13 +2,18 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { bundleAtbash, nativePackages, writeNativeLoader } from "./build-lib.mjs";
+import {
+  bundleAtbash,
+  nativePackages,
+  resolveEnvironmentSdk,
+  selectBuildEnvironment,
+  writeNativeLoader,
+} from "./build-lib.mjs";
 
 const runtimeDir = "runtime";
 // Everything is built here first and swapped into runtime/ only when the whole build succeeded, so
@@ -93,22 +98,17 @@ export function isEntryPoint(argv1 = process.argv[1], moduleUrl = import.meta.ur
   }
 }
 
-export async function buildMarketplace() {
-  const require = createRequire(import.meta.url);
-  const sdkPackagePath = join(dirname(dirname(require.resolve("@atbash/sdk"))), "package.json");
-  const sdkPackage = JSON.parse(await readFile(sdkPackagePath, "utf8"));
-  const sdkVersion = sdkPackage.version;
-  if (typeof sdkVersion !== "string" || sdkVersion.length === 0) {
-    throw new Error(`Could not resolve the installed Atbash SDK version from ${sdkPackagePath}.`);
-  }
+export async function buildMarketplace(environment = selectBuildEnvironment()) {
+  const { packageJsonPath: sdkPackagePath, version: sdkVersion } =
+    resolveEnvironmentSdk(environment);
   const npmCli = resolveNpmCli();
   const tar = resolveTar();
   const tempDir = await mkdtemp(join(tmpdir(), "atbash-marketplace-"));
   let swapped = false;
 
   try {
-    await bundleAtbash(stagingDir, { minify: true, sourcemap: false });
-    await writeNativeLoader(stagingDir);
+    await bundleAtbash(stagingDir, { minify: true, sourcemap: false, environment });
+    await writeNativeLoader(stagingDir, environment);
     await mkdir(join(stagingDir, "licenses"), { recursive: true });
     await copyFile(
       join(dirname(sdkPackagePath), "LICENSE"),
@@ -156,7 +156,7 @@ export async function buildMarketplace() {
 
     await writeFile(
       join(stagingDir, "manifest.json"),
-      `${JSON.stringify({ sdkVersion, platforms }, null, 2)}\n`,
+      `${JSON.stringify({ environment: environment.name, sdkVersion, platforms }, null, 2)}\n`,
       "utf8",
     );
     await chmod(join(stagingDir, "manifest.json"), 0o644);
@@ -172,7 +172,9 @@ export async function buildMarketplace() {
       throw error;
     }
     await rm(previousDir, { force: true, recursive: true });
-    process.stdout.write(`Built universal Atbash marketplace runtime for SDK ${sdkVersion}.\n`);
+    process.stdout.write(
+      `Built universal Atbash marketplace runtime for ${environment.name} (SDK ${sdkVersion}).\n`,
+    );
   } finally {
     if (!swapped) await rm(stagingDir, { force: true, recursive: true });
     await rm(tempDir, { force: true, recursive: true });

@@ -3,7 +3,6 @@ import {
   buildAllowedJudgeHosts,
   resolve,
   type Decision,
-  type JudgeEndpointConfig,
   type ToolCallInput,
 } from "@atbash/sdk";
 import type { ControlHost } from "../control/protocol.js";
@@ -105,55 +104,36 @@ const REFUSED = `Atbash ERROR: the judge endpoint is not Atbash's own. A local o
 export function assertJudgeEndpointAllowed(
   endpoint: string = resolve("judgeEndpoint"),
   env: NodeJS.ProcessEnv = process.env,
-): JudgeEndpointConfig | undefined {
+): void {
   const raw = endpoint.trim();
-  if (raw === "") return undefined;
+  if (raw === "") return;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     throw new GuardConfigError("Atbash ERROR: the configured judge endpoint is not a valid URL.");
   }
-  if (isAtbashJudge(url)) return undefined;
+  if (isAtbashJudge(url)) return;
   const fromEnv = (env.ATBASH_ENDPOINT ?? "").trim() === raw;
   // The SDK lower-cases and trims the key and accepts exactly 66 hex digits, no 0x prefix.
-  const verifyPubKey = (env.ATBASH_JUDGE_VERIFY_PUBKEY ?? "").trim();
-  const key = /^[0-9a-f]{66}$/i.test(verifyPubKey);
+  const key = /^[0-9a-f]{66}$/i.test((env.ATBASH_JUDGE_VERIFY_PUBKEY ?? "").trim());
   const flag = env[LOCAL_JUDGE_FLAG] === "1";
   if (!fromEnv || !key || !flag) throw new GuardConfigError(REFUSED);
-  // This SDK never reads ATBASH_JUDGE_VERIFY_PUBKEY itself: it verifies response signatures only
-  // for a judge passed as "self-hosted" with its key. Without this, the key above was required but
-  // never checked, and an unsigned answer from the named judge was a permit.
-  return { policy: "self-hosted", endpoint: raw, verifyPubKey };
 }
 
 type JudgeActionFn = Atbash["judgeAction"];
 
 /**
- * A permit needs the judge's own answer to be a permit, not only the SDK's mapping of it.
+ * A permit needs the judge's own `allow === true`, not only the SDK's mapping of it.
  *
- * SDK 0.9.1's `auditToolCall` mapped `action_type === "allow"` to a permit without consulting the
- * judge's `allow` field. This SDK (0.10.10-dev.0) drops that field from `JudgeResult` entirely, so
- * a judge answer of `allow: false` cannot be seen here. What can be checked is the raw judgment's
- * own fields: a permit needs `verdict === "ALLOW"` with `actionType === "allow"`, or the audit
- * tier's explicit marker (`verdict === "No verdict"` with `status === "logged"`). This SDK's own
- * mapping currently agrees, so this is a second, independent check on the permit path rather than
- * a fix for a known gap. The raw judgment is observed on the client that makes the call, for this
- * call only, and a permit without it is an ERROR deny. If a future SDK stops routing through
- * `judgeAction`, nothing is observed and every permit is denied - fail closed, and a test says so.
+ * SDK 0.9.1's `auditToolCall` returns `{ allow: true, verdict: "ALLOW" }` from its
+ * `action_type === "allow"` branch without consulting the judge's `allow` field, so a judge answer
+ * of `{ verdict: "ALLOW", action_type: "allow", allow: false }` was a permit even though the SDK's
+ * own `canonicalAllow` says no. The raw judgment (`JudgeResult.allow`, which is `canonicalAllow`)
+ * is observed here on the client that makes the call, for this call only, and a permit without it
+ * is an ERROR deny. If a future SDK stops routing through `judgeAction`, nothing is observed and
+ * every permit is denied - fail closed, and a test says so.
  */
-/** The judge's own answer is a permit: an ALLOW verdict with an allow action, or the audit tier. */
-function isJudgePermit(judged: unknown): boolean {
-  if (typeof judged !== "object" || judged === null) return false;
-  const { verdict, actionType, status } = judged as {
-    verdict?: unknown;
-    actionType?: unknown;
-    status?: unknown;
-  };
-  if (verdict === "ALLOW" && actionType === "allow") return true;
-  return verdict === "No verdict" && status === "logged";
-}
-
 export function requireJudgeAllow(client: Atbash): ToolCallGuard {
   return {
     async auditToolCall(input: ToolCallInput): Promise<Decision> {
@@ -172,12 +152,16 @@ export function requireJudgeAllow(client: Atbash): ToolCallGuard {
       }
       if (decision.allow !== true || decision.verdict !== "ALLOW") return decision;
       const [only, ...more] = judged;
-      const judgeAllowed = more.length === 0 && isJudgePermit(only);
+      const judgeAllowed =
+        more.length === 0 &&
+        typeof only === "object" &&
+        only !== null &&
+        (only as { allow?: unknown }).allow === true;
       if (judgeAllowed) return decision;
       return {
         allow: false,
         verdict: "ERROR",
-        reason: "the judge's answer did not grant permission",
+        reason: "the judge's answer did not grant permission (allow was not true)",
         ...(decision.toolCallId === undefined ? {} : { toolCallId: decision.toolCallId }),
       };
     },
@@ -185,12 +169,11 @@ export function requireJudgeAllow(client: Atbash): ToolCallGuard {
 }
 
 export function createAtbashGuard(host: ControlHost = "claude"): ToolCallGuard {
-  const judge = assertJudgeEndpointAllowed();
+  assertJudgeEndpointAllowed();
   const configuration = resolveGuardConfiguration(host);
   return requireJudgeAllow(
     Atbash.fromConfig({
       failClosed: true,
-      ...(judge ? { judge } : {}),
       ...(configuration.agentKey ? { agentKey: configuration.agentKey } : {}),
       ...(configuration.orgName ? { orgName: configuration.orgName } : {}),
       timeoutMs: resolveTimeoutMs(),

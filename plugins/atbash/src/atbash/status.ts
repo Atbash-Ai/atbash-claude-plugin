@@ -42,11 +42,10 @@ export type StatusClientFactory = () => StatusClient;
 
 function createStatusClient(): StatusClient {
   // The same endpoint rule as the hook: status must not report "ready" for a judge the hook refuses.
-  const judge = assertJudgeEndpointAllowed();
+  assertJudgeEndpointAllowed();
   const configuration = resolveGuardConfiguration("claude");
   const client = Atbash.fromConfig({
     failClosed: true,
-    ...(judge ? { judge } : {}),
     ...(configuration.agentKey ? { agentKey: configuration.agentKey } : {}),
     ...(configuration.orgName ? { orgName: configuration.orgName } : {}),
     timeoutMs: resolveTimeoutMs(),
