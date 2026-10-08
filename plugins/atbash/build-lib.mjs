@@ -1,6 +1,10 @@
 import { build } from "esbuild";
+import { readFileSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import process from "node:process";
+import { URL } from "node:url";
 
 export const nativePackages = {
   "darwin-arm64": "@atbash/sdk-darwin-arm64",
@@ -10,11 +14,49 @@ export const nativePackages = {
 };
 
 const sdkNativeMarker = 'require2("../index.js")';
+const require = createRequire(import.meta.url);
+const environments = JSON.parse(
+  readFileSync(new URL("./build-environments.json", import.meta.url), "utf8"),
+);
 
-export async function bundleAtbash(outdir, { minify = false, sourcemap = true } = {}) {
+/**
+ * The build environment comes from `--env <name>` or ATBASH_BUILD_ENV and
+ * defaults to prod. An unknown name stops the build rather than guessing.
+ */
+export function selectBuildEnvironment(argv = process.argv.slice(2), env = process.env) {
+  const flag = argv.findIndex((arg) => arg === "--env" || arg.startsWith("--env="));
+  const fromFlag =
+    flag === -1 ? undefined : argv[flag].includes("=") ? argv[flag].split("=")[1] : argv[flag + 1];
+  const name = (fromFlag ?? env.ATBASH_BUILD_ENV ?? "").trim() || "prod";
+  const environment = environments[name];
+  if (environment === undefined) {
+    throw new Error(
+      `Unknown Atbash build environment "${name}". Use one of: ${Object.keys(environments).join(", ")}.`,
+    );
+  }
+  return { name, ...environment };
+}
+
+/** The installed SDK package for an environment, with a resolver rooted at that package. */
+export function resolveEnvironmentSdk(environment) {
+  const packageJsonPath = join(
+    dirname(dirname(require.resolve(environment.sdkPackage))),
+    "package.json",
+  );
+  const { version } = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  if (typeof version !== "string" || version.length === 0) {
+    throw new Error(`Could not resolve the installed Atbash SDK version from ${packageJsonPath}.`);
+  }
+  return { packageJsonPath, version, require: createRequire(packageJsonPath) };
+}
+
+export async function bundleAtbash(outdir, { minify = false, sourcemap = true, environment }) {
   await rm(outdir, { force: true, recursive: true });
 
   await build({
+    ...(environment.sdkPackage === "@atbash/sdk"
+      ? {}
+      : { alias: { "@atbash/sdk": environment.sdkPackage } }),
     bundle: true,
     entryPoints: {
       index: "src/index.ts",
@@ -33,7 +75,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
         name: "atbash-native-loader",
         setup(esbuild) {
           esbuild.onLoad(
-            { filter: /@atbash[\\/]sdk[\\/]dist[\\/]index\.mjs$/ },
+            { filter: /@atbash[\\/]sdk(?:-dev)?[\\/]dist[\\/]index\.mjs$/ },
             async ({ path }) => {
               const { readFile } = await import("node:fs/promises");
               const source = await readFile(path, "utf8");
@@ -62,10 +104,25 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
   }
 }
 
-export async function writeNativeLoader(outdir) {
+export async function writeNativeLoader(outdir, environment) {
   const targets = Object.fromEntries(
     Object.keys(nativePackages).map((platform) => [platform, `./native/${platform}/atbash.node`]),
   );
+  // Production ships the SDK's own defaults untouched. Other environments pin
+  // their judge endpoint and chains over the defaults the SDK routes with.
+  const exportsSource =
+    environment.endpoint === undefined
+      ? "module.exports = require(target);"
+      : `const native = require(target);
+const chains = ${JSON.stringify(environment.chains, null, 2)};
+module.exports = {
+  ...native,
+  DEFAULT_ENDPOINT: ${JSON.stringify(environment.endpoint)},
+  DEFAULT_BLOCKCHAIN_RID: chains.public.blockchainRid,
+  DEFAULT_PRIVATE_BLOCKCHAIN_RID: chains.private.blockchainRid,
+  defaultChromiaNodeUrls: () => [...chains.public.nodeUrls],
+  defaultPrivateNodeUrls: () => [...chains.private.nodeUrls],
+};`;
   const source = `"use strict";
 const key = process.platform + "-" + process.arch;
 const targets = ${JSON.stringify(targets, null, 2)};
@@ -73,33 +130,7 @@ const target = targets[key];
 if (target === undefined) {
   throw new Error("Atbash does not publish a native SDK for " + key + ".");
 }
-const native = require(target);
-const chains = {
-  public: {
-    blockchainRid: "02668c5218871f69a93cc0f7032dcffe06ef0d35ef2f0b07a92a3d83a3f23a7d",
-    nodeUrls: [
-      "https://node0.testnet.chromia.com:7740",
-      "https://node1.testnet.chromia.com:7740",
-      "https://node3.testnet.chromia.com:7740",
-    ],
-  },
-  private: {
-    blockchainRid: "2603569ae8dc3f254323f719c8d4347bba964e874e781291f8474236be8b6493",
-    nodeUrls: [
-      "https://node0-pvn-testnet.dynamic.chromia.dev",
-      "https://node1-pvn-testnet.dynamic.chromia.dev",
-      "https://node2-pvn-testnet.dynamic.chromia.dev",
-    ],
-  },
-};
-module.exports = {
-  ...native,
-  DEFAULT_ENDPOINT: "https://chromia-verified-ai-dev-two.vercel.app",
-  DEFAULT_BLOCKCHAIN_RID: chains.public.blockchainRid,
-  DEFAULT_PRIVATE_BLOCKCHAIN_RID: chains.private.blockchainRid,
-  defaultChromiaNodeUrls: () => [...chains.public.nodeUrls],
-  defaultPrivateNodeUrls: () => [...chains.private.nodeUrls],
-};
+${exportsSource}
 `;
 
   await writeFile(join(outdir, "atbash-native.cjs"), source, "utf8");

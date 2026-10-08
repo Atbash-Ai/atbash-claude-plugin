@@ -1,20 +1,20 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 
-import { bundleAtbash, nativePackages, writeNativeLoader } from "./build-lib.mjs";
+import {
+  bundleAtbash,
+  nativePackages,
+  resolveEnvironmentSdk,
+  selectBuildEnvironment,
+  writeNativeLoader,
+} from "./build-lib.mjs";
 
-const require = createRequire(import.meta.url);
-const sdkPackagePath = join(dirname(dirname(require.resolve("@atbash/sdk"))), "package.json");
-const sdkPackage = JSON.parse(await readFile(sdkPackagePath, "utf8"));
-const sdkVersion = sdkPackage.version;
-if (typeof sdkVersion !== "string" || sdkVersion.length === 0) {
-  throw new Error(`Could not resolve the installed Atbash SDK version from ${sdkPackagePath}.`);
-}
+const environment = selectBuildEnvironment();
+const { packageJsonPath: sdkPackagePath, version: sdkVersion } = resolveEnvironmentSdk(environment);
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 const runtimeDir = "runtime";
 const tempDir = await mkdtemp(join(tmpdir(), "atbash-marketplace-"));
@@ -30,8 +30,8 @@ function run(command, args) {
 }
 
 try {
-  await bundleAtbash(runtimeDir, { minify: true, sourcemap: false });
-  await writeNativeLoader(runtimeDir);
+  await bundleAtbash(runtimeDir, { minify: true, sourcemap: false, environment });
+  await writeNativeLoader(runtimeDir, environment);
   await mkdir(join(runtimeDir, "licenses"), { recursive: true });
   await copyFile(
     join(dirname(sdkPackagePath), "LICENSE"),
@@ -74,10 +74,12 @@ try {
 
   await writeFile(
     join(runtimeDir, "manifest.json"),
-    `${JSON.stringify({ sdkVersion, platforms }, null, 2)}\n`,
+    `${JSON.stringify({ environment: environment.name, sdkVersion, platforms }, null, 2)}\n`,
     "utf8",
   );
-  process.stdout.write(`Built universal Atbash marketplace runtime for SDK ${sdkVersion}.\n`);
+  process.stdout.write(
+    `Built universal Atbash marketplace runtime for ${environment.name} (SDK ${sdkVersion}).\n`,
+  );
 } finally {
   await rm(tempDir, { force: true, recursive: true });
 }

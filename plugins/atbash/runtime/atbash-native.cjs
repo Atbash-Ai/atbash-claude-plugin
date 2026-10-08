@@ -12,22 +12,22 @@ if (target === undefined) {
 }
 const native = require(target);
 const chains = {
-  public: {
-    blockchainRid: "02668c5218871f69a93cc0f7032dcffe06ef0d35ef2f0b07a92a3d83a3f23a7d",
-    nodeUrls: [
+  "public": {
+    "blockchainRid": "02668c5218871f69a93cc0f7032dcffe06ef0d35ef2f0b07a92a3d83a3f23a7d",
+    "nodeUrls": [
       "https://node0.testnet.chromia.com:7740",
       "https://node1.testnet.chromia.com:7740",
-      "https://node3.testnet.chromia.com:7740",
-    ],
+      "https://node3.testnet.chromia.com:7740"
+    ]
   },
-  private: {
-    blockchainRid: "2603569ae8dc3f254323f719c8d4347bba964e874e781291f8474236be8b6493",
-    nodeUrls: [
+  "private": {
+    "blockchainRid": "2603569ae8dc3f254323f719c8d4347bba964e874e781291f8474236be8b6493",
+    "nodeUrls": [
       "https://node0-pvn-testnet.dynamic.chromia.dev",
       "https://node1-pvn-testnet.dynamic.chromia.dev",
-      "https://node2-pvn-testnet.dynamic.chromia.dev",
-    ],
-  },
+      "https://node2-pvn-testnet.dynamic.chromia.dev"
+    ]
+  }
 };
 module.exports = {
   ...native,
