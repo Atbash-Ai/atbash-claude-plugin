@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Self-protection lets the onboarding plan step through: a `Write` of exactly `<config>/plans/<job-id>.json` (not a symlink) and the exact `setup|manage plan <job-id> --input <that file>` helper command. Without it the guided setup and management flows could never submit a plan. Everything else under the Atbash configuration directory stays protected, and the step is still judged. A self-protection check that fails is always a deny, including for setup calls before configuration.
 - Let guided setup run with the plugin enabled: while no configuration exists, the hook allows only the exact setup skill, helper commands, and plan file write, and denies everything else with a setup hint.
 - Report the new agent's status from `setup continue`, so verifying setup needs no separately judged status call.
 - Accept setup and management plans only from the job's `planPath` under `~/.config/atbash/plans/`.

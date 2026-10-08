@@ -37,6 +37,8 @@ const PLAN_FILE = /^[A-Za-z0-9_-]{1,100}\.json$/;
 export interface SetupBootstrap {
   hasConfiguration(): boolean;
   isSetupCall(input: PreToolUseInput): boolean;
+  /** The exact plan steps self-protection lets through (see isPlanStep). */
+  isPlanStep?(input: PreToolUseInput): boolean;
 }
 
 export interface SetupBootstrapOptions {
@@ -172,6 +174,64 @@ function isPlanWrite(filePath: string, env: NodeJS.ProcessEnv): boolean {
   return dirname(target) === plans && PLAN_FILE.test(basename(target));
 }
 
+const PLAN_LAUNCHERS: Readonly<Record<string, string>> = {
+  setup: "atbash-setup",
+  manage: "atbash-manage",
+};
+const JOB_ID = /^[A-Za-z0-9_-]{1,100}$/;
+
+/** A plan write that may skip self-protection: a write follows a symlink, so the file must not be one. */
+function isPlanFile(filePath: string, env: NodeJS.ProcessEnv): boolean {
+  if (!isPlanWrite(filePath, env)) return false;
+  try {
+    return !lstatSync(resolve(filePath)).isSymbolicLink();
+  } catch {
+    // A plan the helper has not seen yet is a new file, not a link.
+    return true;
+  }
+}
+
+/** Exactly `node <launcher> setup|manage plan <job-id> --input <plans>/<job-id>.json`, nothing else. */
+function isPlanCommand(
+  command: string,
+  cwd: string,
+  pluginRoot: string,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const words = splitPlainCommand(command);
+  if (!words || words.length !== 7 || words[0] !== "node") return false;
+  const [, script = "", area = "", action, jobId = "", flag, planPath = ""] = words;
+  const skill = PLAN_LAUNCHERS[area];
+  if (skill === undefined || action !== "plan" || flag !== "--input") return false;
+  if (!JOB_ID.test(jobId) || basename(planPath) !== `${jobId}.json`) return false;
+  const launcher = join(pluginRoot, "skills", skill, "scripts", "atbash-control.mjs");
+  return samePath(script, cwd, launcher) && isPlanFile(planPath, env);
+}
+
+/**
+ * The two onboarding steps that touch `<config>/plans/`: writing a plan and handing it to the
+ * helper. Self-protection guards the whole Atbash configuration directory, so without this the
+ * guided setup and management flows could never submit a plan. A plan is a non-secret proposal
+ * the user still signs in the browser; it cannot switch Atbash off or change its key. The call
+ * still goes to the judge (or the setup bootstrap) like any other.
+ */
+export function isPlanStep(input: PreToolUseInput, options: SetupBootstrapOptions = {}): boolean {
+  const toolInput = record(input.tool_input);
+  if (!toolInput) return false;
+  const env = options.env ?? process.env;
+  if (input.tool_name === "Write") {
+    return typeof toolInput.file_path === "string" && isPlanFile(toolInput.file_path, env);
+  }
+  if (input.tool_name === "Bash") {
+    return (
+      options.pluginRoot !== undefined &&
+      typeof toolInput.command === "string" &&
+      isPlanCommand(toolInput.command, input.cwd, options.pluginRoot, env)
+    );
+  }
+  return false;
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -219,5 +279,6 @@ export function createSetupBootstrap(options: SetupBootstrapOptions = {}): Setup
   return {
     hasConfiguration: () => hasAtbashConfiguration(resolved),
     isSetupCall: (input) => isSetupToolCall(input, resolved),
+    isPlanStep: (input) => isPlanStep(input, resolved),
   };
 }

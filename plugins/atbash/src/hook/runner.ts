@@ -52,16 +52,14 @@ export async function evaluatePreToolUse(
   // Local and deterministic, before the judge or even the configuration: a call that would switch
   // Atbash off or re-point it is denied whatever the judge would say, and whether or not Atbash is
   // configured. A failure of the check itself is a deny, never a pass to the judge.
+  // The one exception is an exact onboarding plan step (bootstrap.isPlanStep): a non-secret plan
+  // under <config>/plans/ that the user still signs in the browser. It is judged like any other call.
   let hit: SelfProtectionHit | undefined;
   try {
-    hit = checkSelfProtection(input.tool_name, input.tool_input, protection);
-  } catch {
-    // Only a missing configuration enters setup mode; an invalid one stays fail closed.
-    if (!bootstrap.hasConfiguration()) {
-      return bootstrap.isSetupCall(input)
-        ? { allow: true, source: "setup-bootstrap" }
-        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+    if (bootstrap.isPlanStep?.(input) !== true) {
+      hit = checkSelfProtection(input.tool_name, input.tool_input, protection);
     }
+  } catch {
     return {
       allow: false,
       verdict: "ERROR",
