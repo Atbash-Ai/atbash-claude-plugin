@@ -131,6 +131,12 @@ export interface ExecutionView {
   completedAt?: string;
 }
 
+export interface AgentStatusSummary {
+  ready: boolean;
+  state: string;
+  message?: string;
+}
+
 export interface PublicJobView {
   schemaVersion: 1;
   jobId: string;
@@ -140,6 +146,7 @@ export interface PublicJobView {
   verificationCode: string;
   verificationUri: string;
   expiresAt: string;
+  planPath?: string;
   nextAction:
     | "OPEN_BROWSER"
     | "PREPARE_PLAN"
@@ -151,6 +158,7 @@ export interface PublicJobView {
   discovery?: SetupInventory;
   proposal?: ProposalView;
   execution?: Omit<ExecutionView, "keyDeliveries"> & { keyDeliveryCount: number };
+  agentStatus?: AgentStatusSummary;
   message?: string;
 }
 

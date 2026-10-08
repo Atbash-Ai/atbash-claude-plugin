@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createPublicKey, publicEncrypt, type JsonWebKey } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,7 +16,9 @@ import { ControlStore, type PendingJob } from "../src/control/store.js";
 import {
   activateCompletedJob,
   cancelControlJob,
+  continueControlJob,
   startControlJob,
+  submitControlPlan,
 } from "../src/control/workflow.js";
 
 test("plan parser permits only the bounded dashboard action vocabulary", () => {
@@ -159,10 +161,61 @@ test("start returns only public pairing data and persists helper secrets locally
   });
 
   assert.equal(output.nextAction, "OPEN_BROWSER");
+  assert.equal(output.planPath, join(root, "plans", `${output.jobId}.json`));
+  if (process.platform !== "win32")
+    assert.equal((await stat(join(root, "plans"))).mode & 0o777, 0o700);
   assert.doesNotMatch(JSON.stringify(output), /SSSS|PRIVATE KEY/);
   const stored = await store.readJob(output.jobId);
   assert.equal(stored.sessionSecret, "S".repeat(43));
   assert.match(stored.keyDeliveryPrivateKeyPem, /PRIVATE KEY/);
+});
+
+test("continuing an activated job reports agent status without failing on status errors", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atbash-continue-"));
+  const store = new ControlStore(root);
+  const job: PendingJob = {
+    schemaVersion: 1,
+    jobId: "job-continue",
+    host: "claude",
+    purpose: "onboard",
+    serviceOrigin: "https://atbash.ai",
+    sessionId: "session-id",
+    sessionSecret: "consumed-after-activation",
+    verificationCode: "ABCD-EFGH",
+    verificationUri: "https://atbash.ai/connect/plugin",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    pollIntervalMs: 2_000,
+    keyDeliveryPrivateKeyPem: "destroyed-after-activation",
+    activatedProfileId: "claude-job-continue",
+  };
+  await store.saveJob(job);
+
+  const ready = await continueControlJob(job.jobId, store, async () => ({
+    ready: true,
+    state: "ready",
+  }));
+  const unavailable = await continueControlJob(job.jobId, store, async () => {
+    throw new Error("network down");
+  });
+
+  assert.equal(ready.nextAction, "DONE");
+  assert.deepEqual(ready.agentStatus, { ready: true, state: "ready" });
+  assert.equal(unavailable.nextAction, "DONE");
+  assert.equal(unavailable.agentStatus?.state, "service_error");
+  assert.match(unavailable.message ?? "", /claude-job-continue is active/);
+});
+
+test("plans are accepted only from the job's plan path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atbash-plan-"));
+  const store = new ControlStore(root);
+  const jobId = "job-plan-path";
+
+  for (const path of [join(root, "elsewhere.json"), join(root, "pending", `${jobId}.json`)]) {
+    await assert.rejects(submitControlPlan(jobId, path, store), /Write the plan to/);
+  }
+  await store.preparePlanDirectory();
+  await writeFile(store.planPath(jobId), JSON.stringify({ actions: [] }));
+  assert.deepEqual(await store.readPlan(jobId), { actions: [] });
 });
 
 test("completed browser execution activates a host profile and destroys transient authority", async () => {

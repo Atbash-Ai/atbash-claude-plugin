@@ -1,3 +1,4 @@
+import { DEFAULT_ENDPOINT } from "@atbash/sdk";
 import type {
   ControlHost,
   ControlPurpose,
@@ -17,7 +18,8 @@ import {
   parseSessionView,
 } from "./protocol.js";
 
-export const DEFAULT_CONTROL_ORIGIN = "https://atbash.ai";
+// Pair with the same Atbash service the bundled SDK judges against.
+export const DEFAULT_CONTROL_ORIGIN = new URL(DEFAULT_ENDPOINT).origin;
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export class ControlApiError extends Error {

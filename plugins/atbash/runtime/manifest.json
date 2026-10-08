@@ -1,21 +1,22 @@
 {
-  "sdkVersion": "0.10.10-dev.0",
+  "environment": "dev",
+  "sdkVersion": "0.16.4-dev.0",
   "platforms": {
     "darwin-arm64": {
-      "package": "@atbash/sdk-darwin-arm64@0.10.10-dev.0",
-      "sha256": "acfc69a1fa3bef6bd7f497164235bcc1314472201fca0ce8dc8b18d341635ea1"
+      "package": "@atbash/sdk-darwin-arm64@0.16.4-dev.0",
+      "sha256": "7399a907a58a9e081d06d6a9e83b410edf69470cb53be43d763fa6c0f139215c"
     },
     "linux-arm64": {
-      "package": "@atbash/sdk-linux-arm64-gnu@0.10.10-dev.0",
-      "sha256": "03930e9bae2fffdd9e481cba5e285d1a2641c35f9dae6e4f31efa7554e53eba5"
+      "package": "@atbash/sdk-linux-arm64-gnu@0.16.4-dev.0",
+      "sha256": "798fa40017a4a4fb6cc38277c49e2538317db52458520e53be79d7b7eb47a97b"
     },
     "linux-x64": {
-      "package": "@atbash/sdk-linux-x64-gnu@0.10.10-dev.0",
-      "sha256": "98c80de7ff197876595dfee2694597027cfb370b8e29c1b25b2f0f8970955040"
+      "package": "@atbash/sdk-linux-x64-gnu@0.16.4-dev.0",
+      "sha256": "555fa74c7cc0428a2a3b2e4631a9ede8383f9f7e31f345a75d1e727469f921cd"
     },
     "win32-x64": {
-      "package": "@atbash/sdk-win32-x64-msvc@0.10.10-dev.0",
-      "sha256": "87834172a81944f0fe2cb72e29b699b074d6778f496c5c6ab35eebdf94755b35"
+      "package": "@atbash/sdk-win32-x64-msvc@0.16.4-dev.0",
+      "sha256": "e68cf60b05159199e63a9490bb2128bac12a6ac18a6094e4207304e74fa10fed"
     }
   }
 }

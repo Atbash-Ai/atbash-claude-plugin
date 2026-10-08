@@ -1,13 +1,14 @@
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
+import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 
 export type GuardFactory = () => ToolCallGuard;
 
 export type HookOutcome =
-  | { allow: true; source: "atbash" }
+  | { allow: true; source: "atbash" | "setup-bootstrap" }
   | { allow: false; reason: string; verdict: "HOLD" | "BLOCK" | "ERROR" };
 
 function formatReference(toolCallId: string | undefined): string {
@@ -38,11 +39,18 @@ function denyFromDecision(decision: Decision): HookOutcome {
 export async function evaluatePreToolUse(
   input: PreToolUseInput,
   createGuard: GuardFactory = createAtbashGuard,
+  bootstrap: SetupBootstrap = createSetupBootstrap(),
 ): Promise<HookOutcome> {
   let guard: ToolCallGuard;
   try {
     guard = createGuard();
   } catch {
+    // Only a missing configuration enters setup mode; an invalid one stays fail closed.
+    if (!bootstrap.hasConfiguration()) {
+      return bootstrap.isSetupCall(input)
+        ? { allow: true, source: "setup-bootstrap" }
+        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+    }
     return {
       allow: false,
       verdict: "ERROR",
