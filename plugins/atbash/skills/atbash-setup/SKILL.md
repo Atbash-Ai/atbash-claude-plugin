@@ -45,6 +45,8 @@ If there is no selected profile, the hook keeps the legacy SDK configuration beh
 
 Setup runs with the hook enabled; do not ask the user to disable the plugin, which also removes this skill. If the hook denies a setup step because a configuration already exists (invalid, jailed, or not registered), report the exact denial and tell the user they can disconnect the current profile from their own terminal with `node "<skill-directory>/scripts/atbash-control.mjs" profile disconnect --host claude`, then start setup again. Do not describe this as bypassing an individual verdict.
 
+To deactivate Atbash, tell the user to disable or uninstall the plugin from the `/plugin` menu (or run `claude plugin disable atbash` in their own terminal). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls. Never try to run that command, edit Claude Code settings, the Atbash config file or the plugin's files, or change `ATBASH_*` variables yourself: the hook denies those tool calls deterministically, before the judge, by design. Tell the user to make the change outside the agent instead.
+
 ## Verify and troubleshoot
 
 Use a harmless tool call that fits the agent's purpose, such as reading a workspace file, to verify activation. Status reports `ready`, `configuration_error`, `agent_not_registered`, `agent_jailed`, or `service_error`; it never prints the private key.

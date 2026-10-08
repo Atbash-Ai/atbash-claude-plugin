@@ -42,6 +42,7 @@ function runHook(script: string, input: PreToolUseInput = makeHookInput()) {
     HOME: home,
     USERPROFILE: home,
     ATBASH_CONFIG_DIR: join(home, ".config", "atbash"),
+    ATBASH_HOOK_DEADLINE_MS: "",
     ATBASH_HOOK_TIMEOUT_MS: "invalid",
   };
   delete env.ATBASH_AGENT_KEY;
