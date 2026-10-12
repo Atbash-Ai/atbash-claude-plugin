@@ -23,27 +23,5 @@
         ]
       }
     }
-  },
-  "test": {
-    "sdkPackage": "@atbash/sdk-dev",
-    "endpoint": "https://chromia-verified-ai-test-fawn.vercel.app",
-    "chains": {
-      "public": {
-        "blockchainRid": "93590c48985ae2bc906b0ef2b49633c87733163410c4066d1831b447d4e202d6",
-        "nodeUrls": [
-          "https://node0.testnet.chromia.com:7740",
-          "https://node1.testnet.chromia.com:7740",
-          "https://node3.testnet.chromia.com:7740"
-        ]
-      },
-      "private": {
-        "blockchainRid": "605b064f529e5e2f23403e3f1cad67151cfcc829bee6d7eac9f53e3787e8d182",
-        "nodeUrls": [
-          "https://node0-pvn-testnet.dynamic.chromia.dev",
-          "https://node1-pvn-testnet.dynamic.chromia.dev",
-          "https://node2-pvn-testnet.dynamic.chromia.dev"
-        ]
-      }
-    }
   }
 }
