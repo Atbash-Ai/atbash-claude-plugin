@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Give each new agent a starting policy: the setup plan suggests a `developer`, `devops`, or `full_baseline` preset, which the owner can switch on the Connect Atbash review page before approving.
 - Let guided setup run with the plugin enabled: while no configuration exists, the hook allows only the exact setup skill, helper commands, and plan file write, and denies everything else with a setup hint.
 - Report the new agent's status from `setup continue`, so verifying setup needs no separately judged status call.
 - Accept setup and management plans only from the job's `planPath` under `~/.config/atbash/plans/`.

@@ -85,6 +85,49 @@ test("plan parser permits only the bounded dashboard action vocabulary", () => {
   );
 });
 
+test("a new agent can carry a versioned starting-policy preset and nothing else", () => {
+  const agent = (policy?: unknown) => ({
+    type: "create_agent",
+    network: "public",
+    organization: "Acme",
+    name: "Claude",
+    purpose: "Review code",
+    risk: "medium",
+    keySource: "generate_in_browser",
+    ...(policy === undefined ? {} : { policy }),
+  });
+
+  const [withPolicy] = parseProposalActions({
+    actions: [agent({ preset: "developer", version: 1 })],
+  });
+  assert.deepEqual(withPolicy, { ...agent(), policy: { preset: "developer", version: 1 } });
+  const [withoutPolicy] = parseProposalActions({ actions: [agent()] });
+  assert.equal("policy" in (withoutPolicy ?? {}), false);
+
+  for (const policy of [
+    { preset: "anything", version: 1 },
+    { preset: "developer", version: 2 },
+    { preset: "developer", version: 1, rules: "- [Financial] LOW -> PASS" },
+    "developer",
+    null,
+  ]) {
+    assert.throws(() => parseProposalActions({ actions: [agent(policy)] }), /policy|unknown/i);
+  }
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [
+          {
+            type: "create_account",
+            network: "public",
+            policy: { preset: "developer", version: 1 },
+          },
+        ],
+      }),
+    /unknown/i,
+  );
+});
+
 test("plans are constrained to the lifecycle supported by each authorization purpose", () => {
   const createAgent = parseProposalActions({
     actions: [
