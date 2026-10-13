@@ -182,6 +182,16 @@ export function isSetupToolCall(
   input: PreToolUseInput,
   options: SetupBootstrapOptions = {},
 ): boolean {
+  // `profile connect` prints the key-import URL and then blocks waiting for the
+  // submission, so Claude Code backgrounds it and the URL goes to a background
+  // log. Without these the assistant cannot read the URL it just caused to be
+  // printed, nor stop the process it started, and setup stalls on the user
+  // copying it out themselves. Neither reads a file or runs a command, so both
+  // are plain tool-name matches: no shell parsing, nothing OS-specific. Every
+  // other call stays denied while setup mode is active, so the shells these can
+  // reach are the ones setup mode itself permitted.
+  if (input.tool_name === "BashOutput" || input.tool_name === "KillShell") return true;
+
   const toolInput = record(input.tool_input);
   if (!toolInput) return false;
 

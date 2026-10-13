@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import type { ToolCallGuard } from "../src/atbash/guard.js";
-import { NOT_SET_UP_REASON, type SetupBootstrap } from "../src/hook/bootstrap.js";
+import { isSetupToolCall, NOT_SET_UP_REASON, type SetupBootstrap } from "../src/hook/bootstrap.js";
 import { evaluatePreToolUse } from "../src/hook/runner.js";
 import { makeHookInput } from "./fixtures.js";
 
@@ -178,6 +178,39 @@ test("a working configuration judges setup calls like any other call", async () 
 
   assert.equal(calls.length, 1);
   assert.equal(outcome.allow ? undefined : outcome.verdict, "BLOCK");
+});
+
+test("the background-shell exemption lasts only as long as setup mode", async () => {
+  // Uses the real matcher rather than a stubbed one: the point is that the
+  // BashOutput exemption is reachable only through the no-configuration branch,
+  // so a configured install cannot inherit it.
+  const realMatcher = (configured: boolean): SetupBootstrap => ({
+    hasConfiguration: () => configured,
+    isSetupCall: (input) => isSetupToolCall(input, { pluginRoot: "/opt/plugins/atbash" }),
+  });
+  const output = makeHookInput({ tool_name: "BashOutput", tool_input: { bash_id: "shell-1" } });
+
+  const duringSetup = await evaluatePreToolUse(output, missingConfiguration, realMatcher(false));
+  assert.deepEqual(duringSetup, { allow: true, source: "setup-bootstrap" });
+
+  // Configured and working: judged like any other call, never waved through.
+  const calls: ToolCallInput[] = [];
+  const judged = await evaluatePreToolUse(
+    output,
+    () => guardReturning({ allow: false, verdict: "BLOCK", reason: "policy" }, calls),
+    realMatcher(true),
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.toolName, "BashOutput");
+  assert.equal(judged.allow, false);
+
+  // Configured but broken: fail closed, with no exemption to fall back on.
+  const broken = await evaluatePreToolUse(output, missingConfiguration, realMatcher(true));
+  assert.deepEqual(broken, {
+    allow: false,
+    verdict: "ERROR",
+    reason: "Atbash ERROR: configuration is missing or invalid.",
+  });
 });
 
 test("routes shell, patch, MCP, and other local tools through the guard", async () => {

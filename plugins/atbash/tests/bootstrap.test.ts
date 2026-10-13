@@ -139,6 +139,29 @@ test("allows only the setup skill and plan-file writes", () => {
   );
 });
 
+test("allows reading and stopping the background shell setup started", () => {
+  // `profile connect` blocks on the key submission, so its key-import URL only
+  // ever reaches a background log. Without these the assistant cannot read the
+  // URL it just printed and setup stalls on the user fetching it by hand.
+  const shell = (tool: string, toolInput: unknown) =>
+    makeHookInput({ tool_name: tool, tool_input: toolInput });
+
+  assert.equal(isSetupToolCall(shell("BashOutput", { bash_id: "shell-1" }), options), true);
+  assert.equal(isSetupToolCall(shell("KillShell", { shell_id: "shell-1" }), options), true);
+
+  // Neither decision reads its arguments, so neither may depend on their shape:
+  // a call with no usable input must not fall through to the record check and
+  // be denied for a reason that has nothing to do with the tool.
+  assert.equal(isSetupToolCall(shell("BashOutput", undefined), options), true);
+  assert.equal(isSetupToolCall(shell("KillShell", "not-a-record"), options), true);
+
+  // The exemption is these two names only — not a general opening for
+  // neighbouring shell tools.
+  for (const tool of ["BashOutputs", "Kill", "KillShellAll", "bashoutput", "killshell"]) {
+    assert.equal(isSetupToolCall(shell(tool, { bash_id: "shell-1" }), options), false, tool);
+  }
+});
+
 test("detects any existing configuration source", async () => {
   const previousHome = process.env.HOME;
   const home = await mkdtemp(join(tmpdir(), "atbash-bootstrap-"));
