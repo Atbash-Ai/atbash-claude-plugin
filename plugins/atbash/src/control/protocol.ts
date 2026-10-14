@@ -64,6 +64,16 @@ export interface SetupInventory {
   unavailableNetworks: ControlNetwork[];
 }
 
+// Starting policies the dashboard can create for a new agent; must match the
+// dashboard's plugin policy presets (src/lib/plugin-control/policy-presets.ts).
+export const POLICY_PRESETS = ["developer", "devops", "full_baseline"] as const;
+export const POLICY_PRESET_VERSION = 1;
+export type PolicyPreset = (typeof POLICY_PRESETS)[number];
+export interface AgentPolicy {
+  preset: PolicyPreset;
+  version: typeof POLICY_PRESET_VERSION;
+}
+
 export type ProposalAction =
   | { type: "create_account"; network: ControlNetwork }
   | { type: "create_organization"; network: ControlNetwork; name: string; description: string }
@@ -77,6 +87,7 @@ export type ProposalAction =
       risk: "low" | "medium" | "high" | "critical";
       keySource: "generate_in_browser" | "local_public_key";
       agentPubkey?: string;
+      policy?: AgentPolicy;
     }
   | {
       type: "update_agent";
@@ -194,6 +205,18 @@ function risk(value: unknown): "low" | "medium" | "high" | "critical" {
   return value;
 }
 
+function agentPolicy(value: unknown): AgentPolicy {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("Agent policy must be an object with preset and version.");
+  const row = value as Record<string, unknown>;
+  exactKeys(row, ["preset", "version"]);
+  if (!(POLICY_PRESETS as readonly unknown[]).includes(row.preset))
+    throw new Error(`Agent policy preset must be one of: ${POLICY_PRESETS.join(", ")}.`);
+  if (row.version !== POLICY_PRESET_VERSION)
+    throw new Error(`Agent policy version must be ${POLICY_PRESET_VERSION}.`);
+  return { preset: row.preset as PolicyPreset, version: POLICY_PRESET_VERSION };
+}
+
 function parseAction(value: unknown): ProposalAction {
   const row = record(value, "plan action");
   if (row.type === "create_account") {
@@ -229,6 +252,7 @@ function parseAction(value: unknown): ProposalAction {
       "risk",
       "keySource",
       "agentPubkey",
+      "policy",
     ]);
     if (row.keySource !== "generate_in_browser" && row.keySource !== "local_public_key")
       throw new Error("Agent keySource is invalid.");
@@ -247,6 +271,7 @@ function parseAction(value: unknown): ProposalAction {
       risk: risk(row.risk),
       keySource: row.keySource,
       ...(agentPubkey ? { agentPubkey: agentPubkey.toLowerCase() } : {}),
+      ...(row.policy === undefined ? {} : { policy: agentPolicy(row.policy) }),
     };
   }
   if (row.type === "update_agent") {

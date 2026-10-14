@@ -97,6 +97,8 @@ Setup works with the plugin enabled. Until an agent is configured, the hook allo
 
 The Connect Atbash link must be on the service of the installed environment (see the table above). If it is not, the installed build is not the one you expect.
 
+Each new agent starts with a policy preset (Developer, DevOps, or Full baseline). Claude suggests one from the agent's purpose, and you can switch it on the Connect Atbash review page before approving. It is created as the organization policy "<agent name> Policy" and can be fine-tuned later under Policies in the dashboard.
+
 Use the `atbash-manage` skill for later name, purpose, risk, or active-state changes. Each change requires a fresh browser authorization.
 
 ## Check status and test
