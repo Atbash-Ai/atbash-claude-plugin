@@ -33,7 +33,7 @@ For a new public setup, the plan normally contains `create_account` when missing
 
 ## Connect an existing agent
 
-After wallet verification and discovery, run `profile connect <job-id>` through the launcher. Show the returned loopback `localUri` to the user. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
+After wallet verification and discovery, run `profile connect <job-id>` through the launcher. Unlike every other setup command, this one does not print and exit: it blocks until the key is submitted, so Claude Code runs it in the background and returns a shell id instead of its output. Read that shell with `BashOutput` to get the loopback `localUri` — setup mode allows `BashOutput` and `KillShell` for exactly this. Never ask the user to open a background log or a second terminal to fetch the link themselves. Show the returned `localUri` to the user, then read the shell again to see whether the submission succeeded; use `KillShell` if the user abandons the connection. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
 
 Never ask the user to paste, upload, reveal, or dictate a private key. Never read or print credential files. Never put a key in a plan, prompt, environment assignment, command-line argument, committed file, or shell history.
 
