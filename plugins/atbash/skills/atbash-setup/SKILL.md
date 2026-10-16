@@ -35,7 +35,7 @@ Give every new agent a starting policy by adding `"policy": { "preset": "<preset
 
 ## Connect an existing agent
 
-After wallet verification and discovery, run `profile connect <job-id>` through the launcher. Show the returned loopback `localUri` to the user. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
+After wallet verification and discovery, run `profile connect <job-id>` through the launcher as a background command. Unlike every other setup command, it does not print and exit: it blocks until the key is submitted. Claude Code reports the file its output is written to; read that file with `Read` to get the loopback `localUri` (on older Claude Code versions that report a shell id instead, use `BashOutput`). Setup mode allows reading only that task output file, and stopping the task with `TaskStop` — load it with `ToolSearch` first if it is not yet available — or `KillShell`. Never ask the user to open the output file, `/bashes`, or a second terminal to fetch the link themselves. Show the `localUri` to the user, then read the output again to see whether the submission succeeded; stop the task if the user abandons the connection. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
 
 Never ask the user to paste, upload, reveal, or dictate a private key. Never read or print credential files. Never put a key in a plan, prompt, environment assignment, command-line argument, committed file, or shell history.
 

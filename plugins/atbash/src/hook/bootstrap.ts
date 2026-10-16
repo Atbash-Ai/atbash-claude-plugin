@@ -33,6 +33,16 @@ const SETUP_COMMANDS = new Set([
 const UNQUOTED_WORD_CHAR = /^[A-Za-z0-9_./:@=+,%-]$/;
 const DOUBLE_QUOTE_ESCAPES = new Set(["$", "`", '"', "\\", "\n"]);
 const PLAN_FILE = /^[A-Za-z0-9_-]{1,100}\.json$/;
+const TASK_OUTPUT_FILE = /^[A-Za-z0-9_-]{1,100}\.output$/;
+/**
+ * Background-task tools setup mode allows by name alone. None reads a file or
+ * runs a command. `TaskStop` stops a task in current Claude Code, which ships it
+ * as a deferred tool — callable only after `ToolSearch` loads its schema.
+ * `ToolSearch` returns schemas and nothing else, and every tool it loads is
+ * still judged here when called. `BashOutput` and `KillShell` are the same two
+ * operations under the names older Claude Code versions use.
+ */
+const SETUP_TASK_TOOLS = new Set(["TaskStop", "ToolSearch", "BashOutput", "KillShell"]);
 
 export interface SetupBootstrap {
   hasConfiguration(): boolean;
@@ -172,6 +182,32 @@ function isPlanWrite(filePath: string, env: NodeJS.ProcessEnv): boolean {
   return dirname(target) === plans && PLAN_FILE.test(basename(target));
 }
 
+/**
+ * Claude Code writes a background task's output to
+ * `<tmp>/claude/<project>/<session-id>/tasks/<task-id>.output`, named after the
+ * session the hook is told about. Requiring that shape, for this session only,
+ * is what keeps a setup-mode Read away from everything else on disk — including
+ * the credential files setup mode exists to protect.
+ */
+function isTaskOutputShape(path: string, sessionId: string): boolean {
+  const tasks = dirname(path);
+  return (
+    TASK_OUTPUT_FILE.test(basename(path)) &&
+    basename(tasks) === "tasks" &&
+    basename(dirname(tasks)) === sessionId
+  );
+}
+
+function isTaskOutputRead(filePath: string, sessionId: string): boolean {
+  if (!isAbsolute(filePath) || sessionId.trim() === "") return false;
+  const target = resolve(filePath);
+  if (!isTaskOutputShape(target, sessionId)) return false;
+  // Judge where the read actually lands, not the name it was asked for: a
+  // symlink at this path, or a symlinked directory above it, could otherwise
+  // point anywhere. A file that does not exist yet resolves to itself.
+  return isTaskOutputShape(canonical(target), sessionId);
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -182,8 +218,23 @@ export function isSetupToolCall(
   input: PreToolUseInput,
   options: SetupBootstrapOptions = {},
 ): boolean {
+  // `profile connect` prints the key-import URL and then blocks waiting for the
+  // submission, so it runs in the background and the URL lands in that task's
+  // output. Without these the assistant cannot read the URL it just caused to
+  // be printed, nor stop the task it started, and setup stalls on the user
+  // fetching it themselves. Every other call stays denied while setup mode is
+  // active, so the tasks these can reach are the ones setup mode permitted.
+  if (SETUP_TASK_TOOLS.has(input.tool_name)) return true;
+
   const toolInput = record(input.tool_input);
   if (!toolInput) return false;
+
+  if (input.tool_name === "Read") {
+    return (
+      typeof toolInput.file_path === "string" &&
+      isTaskOutputRead(toolInput.file_path, input.session_id)
+    );
+  }
 
   if (input.tool_name === "Skill") {
     return typeof toolInput.skill === "string" && SETUP_SKILLS.has(toolInput.skill);
