@@ -197,6 +197,14 @@ test("shipped runtime sends only fixed, checked facts in the judge context", () 
     );
     assertCheckedModel(source, bundle);
     assert.doesNotMatch(source, /workspace=/, bundle);
+    // The call-origin fact is wired with the transcript path, and the transcript reader refuses any
+    // two leading separators in any mix (security review 2026-10-19), so a rebuild cannot drop either.
+    assert.match(
+      source,
+      /context:[\w$]+\([\w$]+,[\w$]+\([\w$]+\.tool_input,[\w$]+\.transcript_path\)\)/,
+      bundle,
+    );
+    assert.ok(source.includes("/^[\\\\/]{2}/"), `${bundle}: the network-path check is not the any-mix rule`);
   }
 });
 
