@@ -247,6 +247,13 @@ test("a network-shaped path is refused even when it names a readable file", () =
     const networkShaped =
       process.platform === "win32" ? `${backslash}${backslash}?${backslash}${file}` : `/${file}`;
     assert.equal(readTranscriptTail(networkShaped), null, networkShaped);
+    // Mixed separators are the same prefix to Windows ("/\host\share" opens \?\UNC\host\share),
+    // so they are refused too (security review 2026-10-19). On Windows these name the readable file.
+    const mixed =
+      process.platform === "win32"
+        ? [`/${backslash}?${backslash}${file}`, `${backslash}/?/${file}`]
+        : [`/${file}`];
+    for (const path of mixed) assert.equal(readTranscriptTail(path), null, path);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
