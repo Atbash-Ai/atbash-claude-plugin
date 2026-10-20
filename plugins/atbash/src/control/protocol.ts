@@ -62,6 +62,8 @@ export interface SetupInventory {
     jailed: boolean;
   }>;
   unavailableNetworks: ControlNetwork[];
+  /** The networks this Atbash deployment serves; absent from older dashboards. */
+  availableNetworks?: ControlNetwork[];
 }
 
 // Starting policies the dashboard can create for a new agent; must match the
@@ -77,7 +79,7 @@ export interface AgentPolicy {
 export type ProposalAction =
   | { type: "create_account"; network: ControlNetwork }
   | { type: "create_organization"; network: ControlNetwork; name: string; description: string }
-  | { type: "activate_free_plan"; network: "public"; organization: string }
+  | { type: "activate_free_plan"; network: ControlNetwork; organization: string }
   | {
       type: "create_agent";
       network: ControlNetwork;
@@ -173,18 +175,24 @@ export interface PublicJobView {
   message?: string;
 }
 
+// Plan errors name the field and the fields allowed, so an assistant building
+// the plan can correct it in one attempt instead of guessing.
 function exactKeys(value: Record<string, unknown>, allowed: string[]): void {
-  if (Object.keys(value).some((key) => !allowed.includes(key)))
-    throw new Error("Plan contains unknown fields.");
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0)
+    throw new Error(
+      `Plan contains unknown fields: ${unknown.join(", ")}. Allowed fields: ${allowed.join(", ")}.`,
+    );
 }
 
 function network(value: unknown): ControlNetwork {
   if (value !== "public" && value !== "private")
-    throw new Error("Plan network must be public or private.");
+    throw new Error('"network" must be "public" or "private" on every action.');
   return value;
 }
 
 function planText(value: unknown, label: string, max: number): string {
+  if (value === undefined) throw new Error(`${label} is required.`);
   if (typeof value !== "string") throw new Error(`${label} must be text.`);
   const normalized = value.trim();
   if (
@@ -234,11 +242,10 @@ function parseAction(value: unknown): ProposalAction {
   }
   if (row.type === "activate_free_plan") {
     exactKeys(row, ["type", "network", "organization"]);
-    if (row.network !== "public")
-      throw new Error("The Free plan is available only on the public network.");
+    // The dashboard decides which network a deployment's Free plan lives on.
     return {
       type: row.type,
-      network: row.network,
+      network: network(row.network),
       organization: planText(row.organization, "Organization", 64),
     };
   }
@@ -300,7 +307,22 @@ function parseAction(value: unknown): ProposalAction {
       },
     };
   }
-  throw new Error("Plan contains an unsupported action.");
+  throw new Error(
+    "Plan contains an unsupported action type. Use create_account, create_organization, activate_free_plan, create_agent, or update_agent.",
+  );
+}
+
+function parseActionAt(value: unknown, index: number): ProposalAction {
+  try {
+    return parseAction(value);
+  } catch (error) {
+    const type =
+      value && typeof value === "object" && typeof (value as { type?: unknown }).type === "string"
+        ? (value as { type: string }).type
+        : "no type";
+    const message = error instanceof Error ? error.message : "it is invalid.";
+    throw new Error(`Plan action ${index + 1} (${type}): ${message}`, { cause: error });
+  }
 }
 
 export function parseProposalActions(value: unknown): ProposalAction[] {
@@ -312,7 +334,7 @@ export function parseProposalActions(value: unknown): ProposalAction[] {
     envelope.actions.length > 10
   )
     throw new Error("Plan must contain between 1 and 10 actions.");
-  const actions = envelope.actions.map(parseAction);
+  const actions = envelope.actions.map(parseActionAt);
   if (actions.filter((action) => action.type === "create_account").length > 1)
     throw new Error("A plan can create at most one account.");
   if (actions.filter((action) => action.type === "create_organization").length > 1)
