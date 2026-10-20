@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -385,9 +385,15 @@ export function readTranscriptTail(
   if (!isAbsolute(path) || isNetworkPath(path)) return null;
   let fd: number | undefined;
   try {
-    if (!statSync(path).isFile()) return null;
+    // lstat, not stat: Claude Code writes a plain file, and a link is never followed - a link to a
+    // network share would make this hook open an SMB connection.
+    if (!lstatSync(path).isFile()) return null;
     // O_NONBLOCK where it exists (POSIX): a file swapped for a FIFO after the check cannot block.
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    // O_NOFOLLOW where it exists: a file swapped for a link after the check is not followed.
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0),
+    );
     const stat = fstatSync(fd);
     if (!stat.isFile()) return null;
     const length = Math.min(stat.size, maxBytes);
