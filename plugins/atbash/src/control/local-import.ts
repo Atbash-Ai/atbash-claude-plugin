@@ -13,7 +13,12 @@ function securityHeaders(response: ServerResponse): void {
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
   );
   response.setHeader("cross-origin-resource-policy", "same-origin");
-  response.setHeader("referrer-policy", "no-referrer");
+  // NOT "no-referrer": per the Fetch spec's "append a request Origin header"
+  // step, a non-GET request under that policy has its serialized origin set to
+  // `null`, so the browser posting this very form would send `Origin: null` and
+  // the same-origin check below could never pass. "same-origin" nulls the
+  // origin only cross-origin, which is exactly the case that check is for.
+  response.setHeader("referrer-policy", "same-origin");
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("x-frame-options", "DENY");
 }

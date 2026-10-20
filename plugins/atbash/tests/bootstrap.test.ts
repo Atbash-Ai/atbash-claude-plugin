@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -137,6 +137,92 @@ test("allows only the setup skill and plan-file writes", () => {
     ),
     false,
   );
+});
+
+test("allows stopping the background task setup started", () => {
+  // `profile connect` blocks on the key submission, so it runs as a background
+  // task. Current Claude Code stops one with TaskStop, a deferred tool that
+  // ToolSearch must load first; older versions use BashOutput and KillShell.
+  const task = (tool: string, toolInput: unknown) =>
+    makeHookInput({ tool_name: tool, tool_input: toolInput });
+
+  assert.equal(isSetupToolCall(task("TaskStop", { task_id: "b3zye4vfy" }), options), true);
+  assert.equal(isSetupToolCall(task("ToolSearch", { query: "select:TaskStop" }), options), true);
+  assert.equal(isSetupToolCall(task("BashOutput", { bash_id: "shell-1" }), options), true);
+  assert.equal(isSetupToolCall(task("KillShell", { shell_id: "shell-1" }), options), true);
+
+  // None of these decisions reads its arguments, so none may depend on their
+  // shape: a call with no usable input must not fall through to the record
+  // check and be denied for a reason that has nothing to do with the tool.
+  assert.equal(isSetupToolCall(task("TaskStop", undefined), options), true);
+  assert.equal(isSetupToolCall(task("KillShell", "not-a-record"), options), true);
+
+  // The exemption is these names only — not a general opening for neighbours.
+  for (const tool of ["TaskStops", "taskstop", "Task", "TaskCreate", "BashOutputs", "killshell"]) {
+    assert.equal(isSetupToolCall(task(tool, { task_id: "b3zye4vfy" }), options), false, tool);
+  }
+});
+
+const SESSION = "58c74def-8a12-434b-927c-1ceaa6505a4e";
+const TASKS = join(tmpdir(), "claude", "c--workspace-example", SESSION, "tasks");
+
+function read(filePath: unknown, session = SESSION) {
+  return makeHookInput({
+    tool_name: "Read",
+    tool_input: { file_path: filePath },
+    session_id: session,
+  });
+}
+
+test("allows reading only this session's background task output", () => {
+  // Current Claude Code writes a background task's output to a file and reads
+  // it with Read. That file is where the key-import URL ends up.
+  assert.equal(isSetupToolCall(read(join(TASKS, "b3zye4vfy.output")), options), true);
+
+  for (const [label, path] of [
+    [
+      "another session's task",
+      join(tmpdir(), "claude", "c--x", "other-session", "tasks", "b.output"),
+    ],
+    ["the agent key", join(CONFIG, "guard-client-key")],
+    ["a host profile", join(CONFIG, "hosts", "claude.json")],
+    ["an output file outside tasks", join(tmpdir(), "claude", "c--x", SESSION, "b.output")],
+    ["a non-output file in tasks", join(TASKS, "b3zye4vfy.json")],
+    ["a traversal out of tasks", join(TASKS, "..", "..", "secret.output")],
+    ["a relative path", join("tasks", "b3zye4vfy.output")],
+  ]) {
+    assert.equal(isSetupToolCall(read(path), options), false, label);
+  }
+  assert.equal(isSetupToolCall(read(42), options), false, "a non-string path");
+  // The session anchor cannot be satisfied by an empty or missing session id.
+  assert.equal(isSetupToolCall(read(join(TASKS, "b.output"), ""), options), false, "no session");
+});
+
+test("judges a task-output read by where it lands, not the name it was asked for", async () => {
+  // A symlinked directory in the expected place would otherwise turn an
+  // allowed-looking path into a read of anything on disk. Junctions need no
+  // privileges on Windows; elsewhere the type is ignored and a symlink is made.
+  const root = await mkdtemp(join(tmpdir(), "atbash-task-output-"));
+  try {
+    const secrets = join(root, "secrets");
+    await mkdir(secrets, { recursive: true });
+    await writeFile(join(secrets, "b3zye4vfy.output"), "agent key material");
+    const sessionDir = join(root, "claude", "c--x", SESSION);
+    await mkdir(sessionDir, { recursive: true });
+    await symlink(secrets, join(sessionDir, "tasks"), "junction");
+
+    const viaLink = join(sessionDir, "tasks", "b3zye4vfy.output");
+    assert.equal(isSetupToolCall(read(viaLink), options), false);
+
+    // Control: the same layout without the link is allowed, so the denial above
+    // is about the link and not about this temporary directory.
+    const realTasks = join(root, "claude", "c--y", SESSION, "tasks");
+    await mkdir(realTasks, { recursive: true });
+    await writeFile(join(realTasks, "b3zye4vfy.output"), "localUri");
+    assert.equal(isSetupToolCall(read(join(realTasks, "b3zye4vfy.output")), options), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("detects any existing configuration source", async () => {

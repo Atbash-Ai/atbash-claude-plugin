@@ -78,6 +78,13 @@ test("loopback import connects a wallet-owned agent without sending its private 
   assert.equal(form.status, 200);
   assert.equal(form.headers.get("cache-control"), "no-store");
   assert.match(form.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+  // The page must not disclaim its own origin. Under "no-referrer" the Fetch
+  // spec sets a non-GET request's serialized origin to `null`, so the browser
+  // submitting this form would send `Origin: null` and the same-origin check
+  // could never pass — every real submission 403s while this suite, which sets
+  // the header by hand, stays green. Assert the policy itself: it is the only
+  // part of this a test can see that a browser would act on.
+  assert.equal(form.headers.get("referrer-policy"), "same-origin");
   const html = await form.text();
   const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
   assert.ok(csrf);
@@ -91,6 +98,15 @@ test("loopback import connects a wallet-owned agent without sending its private 
     body: new URLSearchParams({ csrf, privateKey: keypair.priv_key }),
   });
   assert.equal(rejected.status, 403);
+
+  // An opaque origin is still refused: the fix changes which origin a browser
+  // sends, not what the server accepts.
+  const opaque = await fetch(local.localUri, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: "null" },
+    body: new URLSearchParams({ csrf, privateKey: keypair.priv_key }),
+  });
+  assert.equal(opaque.status, 403);
 
   const oversized = await fetch(local.localUri, {
     method: "POST",
