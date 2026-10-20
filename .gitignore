@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-tests/
+plugins/atbash/runtime.build/
+plugins/atbash/runtime.old/
 coverage/
 
 .env
@@ -11,3 +13,4 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+plugins/atbash/.tmp/
