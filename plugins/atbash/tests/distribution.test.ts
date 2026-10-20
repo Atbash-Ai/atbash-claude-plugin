@@ -204,7 +204,10 @@ test("shipped runtime sends only fixed, checked facts in the judge context", () 
       /context:[\w$]+\([\w$]+,[\w$]+\([\w$]+\.tool_input,[\w$]+\.transcript_path\)\)/,
       bundle,
     );
-    assert.ok(source.includes("/^[\\\\/]{2}/"), `${bundle}: the network-path check is not the any-mix rule`);
+    assert.ok(
+      source.includes("/^[\\\\/]{2}/"),
+      `${bundle}: the network-path check is not the any-mix rule`,
+    );
   }
 });
 
