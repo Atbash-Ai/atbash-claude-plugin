@@ -153,19 +153,10 @@ test("only the tail is read, and a recent injection is still found in a large tr
 
 test("the context carries the fact only for tool_output, and never transcript text", () => {
   const input = makeHookInput();
-  assert.equal(
-    buildAtbashContext(input),
-    "source=claude-code; permission_mode=default",
-  );
-  assert.equal(
-    buildAtbashContext(input, "unknown"),
-    "source=claude-code; permission_mode=default",
-  );
+  assert.equal(buildAtbashContext(input), "source=claude-code; permission_mode=default");
+  assert.equal(buildAtbashContext(input, "unknown"), "source=claude-code; permission_mode=default");
   const withFact = buildAtbashContext(input, "tool_output");
-  assert.equal(
-    withFact,
-    `source=claude-code; permission_mode=default; ${CALL_ORIGIN_TOOL_OUTPUT}`,
-  );
+  assert.equal(withFact, `source=claude-code; permission_mode=default; ${CALL_ORIGIN_TOOL_OUTPUT}`);
   assert.equal(withFact.includes("Dropbox"), false);
   // The folder name never travels, with or without the fact (the checked context this builds on).
   assert.equal(withFact.includes("workspace="), false);
