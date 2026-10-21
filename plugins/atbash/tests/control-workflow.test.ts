@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { ControlApiError } from "../src/control/client.js";
 import { generateKeyDeliveryPair } from "../src/control/keys.js";
 import {
   parseProposalActions,
@@ -505,6 +506,94 @@ test("cancelling a control job removes its local pending secrets", async () => {
   const result = await cancelControlJob(job.jobId, store, client as never);
 
   assert.equal(result.status, "cancelled");
+  assert.match(result.message ?? "", /local data was removed/);
   assert.deepEqual(calls, [[job.sessionId, job.sessionSecret]]);
   await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+// AT-576: Atbash answers 404 to cancelling a session that is no longer active.
+// The local job still holds the session secret and the key-delivery private key.
+async function savedCancelJob(): Promise<{ store: ControlStore; job: PendingJob }> {
+  const store = new ControlStore(await mkdtemp(join(tmpdir(), "atbash-cancel-ended-")));
+  const job: PendingJob = {
+    schemaVersion: 1,
+    jobId: "job-ended",
+    host: "claude",
+    purpose: "onboard",
+    serviceOrigin: "https://atbash.ai",
+    sessionId: "session-id",
+    sessionSecret: "S".repeat(43),
+    verificationCode: "ABCD-EFGH",
+    verificationUri: "https://atbash.ai/connect/plugin",
+    expiresAt: "2020-01-01T00:00:00.000Z",
+    pollIntervalMs: 2_000,
+    keyDeliveryPrivateKeyPem: "pending-private-key",
+  };
+  await store.saveJob(job);
+  return { store, job };
+}
+
+function endedSessionClient(status: string | null, keyDeliveries: unknown[] = []) {
+  return {
+    async cancelSession() {
+      throw new ControlApiError("Session not found or no longer active", 404);
+    },
+    async getSession() {
+      if (status === null) throw new ControlApiError("Session not found", 404);
+      return { status };
+    },
+    async getLatestExecution() {
+      return { keyDeliveries };
+    },
+  };
+}
+
+test("cancelling an expired session still removes its local secrets", async () => {
+  const { store, job } = await savedCancelJob();
+
+  const result = await cancelControlJob(job.jobId, store, endedSessionClient("expired") as never);
+
+  assert.equal(result.status, "expired");
+  assert.match(result.message ?? "", /already ended/);
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+test("cancelling a session Atbash no longer knows still removes its local secrets", async () => {
+  const { store, job } = await savedCancelJob();
+
+  await cancelControlJob(job.jobId, store, endedSessionClient(null) as never);
+
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+test("cancel refuses to delete a completed setup whose new agent key is not activated", async () => {
+  const { store, job } = await savedCancelJob();
+
+  await assert.rejects(
+    cancelControlJob(job.jobId, store, endedSessionClient("completed", [{}]) as never),
+    /setup continue job-ended/,
+  );
+  // The key-delivery private key is the only way to open the delivered agent key.
+  assert.equal((await store.readJob(job.jobId)).keyDeliveryPrivateKeyPem, "pending-private-key");
+});
+
+test("cancel removes a completed job that delivered no agent key", async () => {
+  const { store, job } = await savedCancelJob();
+
+  const result = await cancelControlJob(job.jobId, store, endedSessionClient("completed") as never);
+
+  assert.equal(result.status, "completed");
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+test("cancel keeps the local job when Atbash cannot be reached, so it can be retried", async () => {
+  const { store, job } = await savedCancelJob();
+  const client = {
+    async cancelSession() {
+      throw new ControlApiError("Atbash could not be reached.");
+    },
+  };
+
+  await assert.rejects(cancelControlJob(job.jobId, store, client as never), /could not be reached/);
+  assert.equal((await store.readJob(job.jobId)).jobId, job.jobId);
 });
