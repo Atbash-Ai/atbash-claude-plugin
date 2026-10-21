@@ -29,7 +29,47 @@ Inspect progress with `setup inspect <job-id>` through the same launcher. Follow
 - `RECOVER`: report completed and failed steps. Any replacement mutation requires a new setup or management session and approval.
 - `DONE`: `setup continue` already reports the new agent's `agentStatus`. Report setup as finished only when `nextAction` is `DONE` and `agentStatus.state` is `ready`. A session `status` of `completed` alone does not mean the profile is active. Do not run another command to check status: from this point every tool call is judged under the new agent's policy, and a blocked call can jail the agent. To confirm enforcement, make one harmless call that fits the agent's purpose, such as reading a file in the workspace with the Read tool rather than a shell command.
 
-For a new public setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, purposes, risks, or agent names.
+For a new setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, organization descriptions, purposes, risks, or agent names; ask for any that are missing before building the plan.
+
+### Plan format
+
+A plan is `{"actions": [...]}` with the actions in the order below. There are no other top-level fields. Every action carries its own `"network"` (`"public"` or `"private"`), and all actions in one plan use the same network. Use a network listed in discovery's `availableNetworks`, which names the networks this Atbash deployment serves: when it lists only one, use it without asking; when it is absent, ask the user. Use exactly these fields:
+
+| Action                | Include when                               | Fields                                                                                                                                                                                   |
+| --------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_account`      | discovery shows no account on that network | `type`, `network`                                                                                                                                                                        |
+| `create_organization` | the organization does not exist yet        | `type`, `network`, `name` (2–64 letters, digits, `.`, `_`, or `-`), `description` (1–280 characters)                                                                                     |
+| `activate_free_plan`  | the organization has no subscription       | `type`, `network`, `organization` (the organization's name)                                                                                                                              |
+| `create_agent`        | always, for a new agent                    | `type`, `network`, `organization`, `name` (up to 80 characters), `purpose` (up to 280), `risk` (`low`, `medium`, `high`, or `critical`), `keySource` (`"generate_in_browser"`), `policy` |
+
+For example, a new user on a deployment that serves only the private network:
+
+```json
+{
+  "actions": [
+    { "type": "create_account", "network": "private" },
+    {
+      "type": "create_organization",
+      "network": "private",
+      "name": "acme_ai",
+      "description": "Acme agents"
+    },
+    { "type": "activate_free_plan", "network": "private", "organization": "acme_ai" },
+    {
+      "type": "create_agent",
+      "network": "private",
+      "organization": "acme_ai",
+      "name": "claude dev",
+      "purpose": "Coding assistant for the Acme repository",
+      "risk": "medium",
+      "keySource": "generate_in_browser",
+      "policy": { "preset": "developer", "version": 1 }
+    }
+  ]
+}
+```
+
+Activate the Free plan on the same network as the rest of the plan. If the dashboard answers that the Free plan is available only on the public network, that deployment keeps Free on public: a private organization there needs a paid plan first, so suggest the public network or a plan from the dashboard. If the helper rejects the plan, its error names the action number and the field to fix; correct that field, write the whole plan again, and resubmit it.
 
 Give every new agent a starting policy by adding `"policy": { "preset": "<preset>", "version": 1 }` to its `create_agent` action. Choose the preset from the agent's purpose: `developer` for coding work (the usual choice for Claude Code), `devops` for infrastructure, deployment, or operations work, and `full_baseline` when the user asks for the strictest protection. Tell the user which preset you suggested and that they can switch it on the Connect Atbash review page before approving; the policy they approve is created as the organization policy "<agent name> Policy" and can be fine-tuned later under Policies in the dashboard. If the user wants a different preset before review, resubmit the plan with it.
 

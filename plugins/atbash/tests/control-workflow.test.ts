@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createPublicKey, publicEncrypt, type JsonWebKey } from "node:crypto";
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -82,6 +82,62 @@ test("plan parser permits only the bounded dashboard action vocabulary", () => {
         ],
       }),
     /same network/,
+  );
+});
+
+test("plan errors name the action and the field to fix", () => {
+  const agent = {
+    type: "create_agent",
+    network: "private",
+    organization: "acme_ai",
+    name: "claude dev",
+    purpose: "Coding assistant",
+    risk: "medium",
+    keySource: "generate_in_browser",
+  };
+
+  assert.throws(() => parseProposalActions({ actions: [{ type: "create_account" }, agent] }), {
+    message:
+      'Plan action 1 (create_account): "network" must be "public" or "private" on every action.',
+  });
+  assert.throws(() => parseProposalActions({ network: "private", actions: [agent] }), {
+    message: "Plan contains unknown fields: network. Allowed fields: actions.",
+  });
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [{ type: "create_organization", network: "private", name: "acme_ai" }, agent],
+      }),
+    { message: "Plan action 1 (create_organization): Organization description is required." },
+  );
+});
+
+test("the Free plan follows the plan's network; the dashboard decides where it lives", () => {
+  const actions = parseProposalActions({
+    actions: [
+      { type: "create_account", network: "private" },
+      { type: "create_organization", network: "private", name: "acme_ai", description: "Acme" },
+      { type: "activate_free_plan", network: "private", organization: "acme_ai" },
+    ],
+  });
+
+  assert.deepEqual(actions[2], {
+    type: "activate_free_plan",
+    network: "private",
+    organization: "acme_ai",
+  });
+});
+
+test("the setup skill's example plan is accepted as written", async () => {
+  const skill = await readFile("skills/atbash-setup/SKILL.md", "utf8");
+  const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(skill)?.[1];
+  assert.ok(example, "SKILL.md documents an example plan");
+
+  const actions = parseProposalActions(JSON.parse(example));
+  validateProposalActionsForPurpose(actions, "onboard");
+  assert.deepEqual(
+    actions.map((action) => action.type),
+    ["create_account", "create_organization", "activate_free_plan", "create_agent"],
   );
 });
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Build the setup plan on the network the Atbash deployment serves (discovery's `availableNetworks`) and allow the Free plan on private, so new users on a private-only deployment are no longer onboarded onto public. The setup skill now documents the exact plan format, and plan errors name the action and field to fix.
 - Self-protection lets the onboarding plan step through: a `Write` of exactly `<config>/plans/<job-id>.json` (not a symlink) and the exact `setup|manage plan <job-id> --input <that file>` helper command. Without it the guided setup and management flows could never submit a plan. Everything else under the Atbash configuration directory stays protected, and the step is still judged. A self-protection check that fails is always a deny, including for setup calls before configuration.
 - Give each new agent a starting policy: the setup plan suggests a `developer`, `devops`, or `full_baseline` preset, which the owner can switch on the Connect Atbash review page before approving.
 - Let guided setup run with the plugin enabled: while no configuration exists, the hook allows only the exact setup skill, helper commands, plan file write, and reading or stopping the background task a setup command started (only that session's task output file can be read), and denies everything else with a setup hint.
