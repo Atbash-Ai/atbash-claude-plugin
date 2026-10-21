@@ -11,6 +11,7 @@
 - Select the development or production build with `ATBASH_BUILD_ENV` / `--env` instead of editing code: `dev` bundles `@atbash/sdk-dev` with the pinned development service and chains, and the default `prod` build ships `@atbash/sdk` untouched.
 - Record the build environment in `runtime/manifest.json`; CI rebuilds for that environment and requires a production runtime on `main` and release tags.
 - Pair the setup helper with the bundled SDK's service by default, so development builds need no `ATBASH_CONTROL_ORIGIN`.
+- Tell the setup and management skills to cancel a job (`setup cancel` / `manage cancel`) when the user stops before approving, or when its session was cancelled, rejected or expired. Cancelling a session that already ended on Atbash now still deletes the job's local session secret and key-delivery key, except for a completed setup whose new agent key is not yet activated (the helper says to run `setup continue`).
 
 ## 0.5.0 - 2026-09-24
 

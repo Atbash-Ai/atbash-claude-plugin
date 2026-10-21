@@ -11,6 +11,8 @@ Start `manage start --host claude` through this skill's `scripts/atbash-control.
 
 The user reviews and signs the exact change in Connect Atbash. Do not click approval controls or sign for them. Inspect and continue until the receipt is complete. If any approved step partially completed, report it and start a new management session for further work.
 
+If the user wants to stop before signing, run `manage cancel <job-id>` through the launcher: it cancels the authorization, so its link stops working, and deletes the job's local files. Run it too when the session was cancelled, rejected, or expired; if the helper reports that the session had already ended, the cleanup still succeeded. Do not cancel after the user signed the change; let it finish and report the receipt.
+
 Supported changes are agent `name`, `purpose`, `risk`, and `active`. Billing upgrades, ownership transfer, key rotation/recovery, certification, policies, mandate, and accountability require their dedicated dashboard flows until the control API explicitly advertises those actions.
 
 Never read, print, transmit, or ask for an agent private key. Agent keys authorize ordinary Atbash activity only; they do not grant organization-owner permission.

@@ -75,9 +75,17 @@ Give every new agent a starting policy by adding `"policy": { "preset": "<preset
 
 ## Connect an existing agent
 
-After wallet verification and discovery, run `profile connect <job-id>` through the launcher as a background command. Unlike every other setup command, it does not print and exit: it blocks until the key is submitted. Claude Code reports the file its output is written to; read that file with `Read` to get the loopback `localUri` (on older Claude Code versions that report a shell id instead, use `BashOutput`). Setup mode allows reading only that task output file, and stopping the task with `TaskStop` — load it with `ToolSearch` first if it is not yet available — or `KillShell`. Never ask the user to open the output file, `/bashes`, or a second terminal to fetch the link themselves. Show the `localUri` to the user, then read the output again to see whether the submission succeeded; stop the task if the user abandons the connection. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
+After wallet verification and discovery, run `profile connect <job-id>` through the launcher as a background command. Unlike every other setup command, it does not print and exit: it blocks until the key is submitted. Claude Code reports the file its output is written to; read that file with `Read` to get the loopback `localUri` (on older Claude Code versions that report a shell id instead, use `BashOutput`). Setup mode allows reading only that task output file, and stopping the task with `TaskStop` — load it with `ToolSearch` first if it is not yet available — or `KillShell`. Never ask the user to open the output file, `/bashes`, or a second terminal to fetch the link themselves. Show the `localUri` to the user, then read the output again to see whether the submission succeeded. If the user abandons the connection, stop the task and cancel the job as described under **Cancel setup**. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
 
 Never ask the user to paste, upload, reveal, or dictate a private key. Never read or print credential files. Never put a key in a plan, prompt, environment assignment, command-line argument, committed file, or shell history.
+
+## Cancel setup
+
+`setup cancel <job-id>`, run through the same launcher, ends a setup job: it cancels the session in Connect Atbash, so its link stops working, and deletes the job's local files, including its session secret. Setup mode allows it.
+
+- Run it when the user asks to stop, cancel, or start over, or abandons setup, while `nextAction` is `OPEN_BROWSER`, `PREPARE_PLAN`, or `REVIEW_IN_BROWSER`. Tell the user setup was cancelled. To start over, run `setup start` for a new job.
+- Run it at `RECOVER` when the session was cancelled, rejected, or expired, and for an expired job you will not resume, so its secrets do not stay on disk. If the helper reports that the session had already ended on Atbash, the cleanup still succeeded.
+- Do not cancel after the user approved the proposal: approved steps run in the browser and cancelling does not undo them. Let the job finish and report what was created. At `ACTIVATE` the new agent's key is waiting to be activated and the helper refuses to cancel; run `setup continue <job-id>` instead.
 
 ## Profiles and legacy compatibility
 

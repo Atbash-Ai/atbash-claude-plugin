@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { getAtbashStatus } from "../atbash/status.js";
-import { ControlClient, resolveControlOrigin } from "./client.js";
+import { ControlApiError, ControlClient, resolveControlOrigin } from "./client.js";
 import { decryptAgentKey, generateKeyDeliveryPair } from "./keys.js";
 import {
   parseProposalActions,
@@ -325,17 +325,61 @@ export async function cancelControlJob(
   client?: ControlClient,
 ): Promise<PublicJobView> {
   const job = await store.readJob(jobId);
-  await (client ?? clientFor(job)).cancelSession(job.sessionId, job.sessionSecret);
+  const api = client ?? clientFor(job);
+  let status: SessionView["status"] = "cancelled";
+  // Says what happened locally too, so the assistant can report the cleanup instead of assuming it.
+  let message = "The pending authorization was cancelled. Its local data was removed.";
+  try {
+    await api.cancelSession(job.sessionId, job.sessionSecret);
+  } catch (error) {
+    // Atbash refuses to cancel a session that is no longer active. The local job
+    // still holds the session secret and the key-delivery private key, so it is
+    // removed anyway - unless the session completed: then that key is the only
+    // way to open the new agent's delivered key, and deleting it would strand an
+    // agent that already exists. Any other failure keeps the job for a retry.
+    if (!(error instanceof ControlApiError) || error.status !== 404) throw error;
+    status = await endedSessionStatus(api, job);
+    message = "The setup session had already ended on Atbash. Its local data was removed.";
+  }
   const session: SessionView = {
     id: job.sessionId,
     host: job.host,
     purpose: job.purpose,
     clientVersion: CONTROL_CLIENT_VERSION,
-    status: "cancelled",
+    status,
     identityBound: false,
     expiresAt: job.expiresAt,
   };
-  const result = view({ job, session, message: "The pending authorization was cancelled." });
+  const result = view({ job, session, message });
   await store.removeJob(job.jobId);
   return result;
+}
+
+/**
+ * Why Atbash refused to cancel, as a status the local job may be removed for.
+ * A session Atbash no longer knows (expired and cleaned up, or a secret already
+ * consumed by activation) counts as ended.
+ */
+async function endedSessionStatus(
+  api: Pick<ControlClient, "getSession" | "getLatestExecution">,
+  job: PendingJob,
+): Promise<SessionView["status"]> {
+  let current: SessionView;
+  try {
+    current = await api.getSession(job.sessionId, job.sessionSecret);
+  } catch (error) {
+    if (error instanceof ControlApiError && error.status === 404) return "expired";
+    throw error;
+  }
+  if (current.status === "completed" && !job.activatedProfileId) {
+    const execution = await api.getLatestExecution(job.sessionId, job.sessionSecret);
+    if (execution && execution.keyDeliveries.length > 0) {
+      throw new Error(
+        `This setup already completed on Atbash and delivered a new agent key that is not activated yet. Run "setup continue ${job.jobId}" to activate it instead of cancelling.`,
+      );
+    }
+  }
+  if (["cancelled", "rejected", "expired", "completed"].includes(current.status))
+    return current.status;
+  throw new Error("Atbash could not cancel this session yet. Try again.");
 }

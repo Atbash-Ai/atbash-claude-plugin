@@ -181,5 +181,8 @@ test("marketplace package includes setup and management skills", () => {
   assert.match(skill, /--host claude/);
   assert.match(manageSkill, /^---\r?\nname: atbash-manage\r?\n/);
   assert.match(manageSkill, /--host claude/);
+  // AT-576: the helper can cancel a job, but only an instruction makes the agent use it.
+  assert.match(skill, /`setup cancel <job-id>`/);
+  assert.match(manageSkill, /`manage cancel <job-id>`/);
   assert.match(setupLauncher, /runtime\/control\.cjs/);
 });
