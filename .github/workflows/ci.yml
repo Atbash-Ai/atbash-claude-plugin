@@ -28,5 +28,11 @@ jobs:
       - name: Verify
         run: npm run verify
 
+      - name: Require a production runtime on main
+        if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
+        run: node plugins/atbash/runtime-environment.mjs --require prod
+
       - name: Verify committed marketplace runtime
-        run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
+        run: |
+          ATBASH_BUILD_ENV="$(node plugins/atbash/runtime-environment.mjs)" npm run build:marketplace
+          git diff --exit-code -- plugins/atbash/runtime

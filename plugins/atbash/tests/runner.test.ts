@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import type { ToolCallGuard } from "../src/atbash/guard.js";
+import { isSetupToolCall, NOT_SET_UP_REASON, type SetupBootstrap } from "../src/hook/bootstrap.js";
 import { evaluatePreToolUse } from "../src/hook/runner.js";
 import { makeHookInput } from "./fixtures.js";
 
@@ -15,6 +18,14 @@ function guardReturning(decision: Decision, calls: ToolCallInput[] = []): ToolCa
     },
   };
 }
+
+function bootstrap(configured: boolean, setupCall = false): SetupBootstrap {
+  return { hasConfiguration: () => configured, isSetupCall: () => setupCall };
+}
+
+const missingConfiguration = () => {
+  throw new Error("missing configuration");
+};
 
 test("allows only a canonical ALLOW decision", async () => {
   const calls: ToolCallInput[] = [];
@@ -77,9 +88,13 @@ test("denies BLOCK and inconsistent decisions", async () => {
 });
 
 test("fails closed on configuration and runtime errors", async () => {
-  const configurationError = await evaluatePreToolUse(makeHookInput(), () => {
-    throw new Error("contains-sensitive-config");
-  });
+  const configurationError = await evaluatePreToolUse(
+    makeHookInput(),
+    () => {
+      throw new Error("contains-sensitive-config");
+    },
+    bootstrap(true),
+  );
   const runtimeError = await evaluatePreToolUse(makeHookInput(), () => ({
     async auditToolCall() {
       throw new Error("contains-sensitive-runtime-data");
@@ -115,11 +130,112 @@ test("judges every Atbash-named tool and fails closed without configuration", as
     assert.equal(blocked.allow, false);
     assert.equal(blocked.allow ? undefined : blocked.verdict, "BLOCK");
 
-    const unconfigured = await evaluatePreToolUse(input, () => {
-      throw new Error("missing configuration");
-    });
+    const invalid = await evaluatePreToolUse(input, missingConfiguration, bootstrap(true));
+    assert.equal(invalid.allow, false);
+    assert.equal(invalid.allow ? undefined : invalid.verdict, "ERROR");
+
+    const unconfigured = await evaluatePreToolUse(input, missingConfiguration, bootstrap(false));
     assert.equal(unconfigured.allow, false);
     assert.equal(unconfigured.allow ? undefined : unconfigured.verdict, "ERROR");
+  }
+});
+
+test("without any configuration, allows only setup calls", async () => {
+  const setup = await evaluatePreToolUse(
+    makeHookInput(),
+    missingConfiguration,
+    bootstrap(false, true),
+  );
+  const other = await evaluatePreToolUse(
+    makeHookInput(),
+    missingConfiguration,
+    bootstrap(false, false),
+  );
+
+  assert.deepEqual(setup, { allow: true, source: "setup-bootstrap" });
+  assert.deepEqual(other, { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON });
+});
+
+test("an existing invalid configuration keeps setup calls fail closed", async () => {
+  const outcome = await evaluatePreToolUse(
+    makeHookInput(),
+    missingConfiguration,
+    bootstrap(true, true),
+  );
+
+  assert.deepEqual(outcome, {
+    allow: false,
+    verdict: "ERROR",
+    reason: "Atbash ERROR: configuration is missing or invalid.",
+  });
+});
+
+test("a working configuration judges setup calls like any other call", async () => {
+  const calls: ToolCallInput[] = [];
+  const outcome = await evaluatePreToolUse(
+    makeHookInput(),
+    () => guardReturning({ allow: false, verdict: "BLOCK", reason: "policy" }, calls),
+    bootstrap(false, true),
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(outcome.allow ? undefined : outcome.verdict, "BLOCK");
+});
+
+test("the background-task exemptions last only as long as setup mode", async () => {
+  // Uses the real matcher rather than a stubbed one: the point is that these
+  // exemptions are reachable only through the no-configuration branch, so a
+  // configured install cannot inherit them. The task-output Read matters most:
+  // it is the one exemption that reads a file.
+  const realMatcher = (configured: boolean): SetupBootstrap => ({
+    hasConfiguration: () => configured,
+    isSetupCall: (input) => isSetupToolCall(input, { pluginRoot: "/opt/plugins/atbash" }),
+  });
+  const session = "session-test";
+  const exempted = [
+    makeHookInput({ tool_name: "TaskStop", tool_input: { task_id: "b3zye4vfy" } }),
+    makeHookInput({
+      tool_name: "Read",
+      session_id: session,
+      tool_input: {
+        file_path: join(
+          tmpdir(),
+          "claude",
+          "c--workspace-example",
+          session,
+          "tasks",
+          "b3zye4vfy.output",
+        ),
+      },
+    }),
+  ];
+
+  for (const call of exempted) {
+    const duringSetup = await evaluatePreToolUse(call, missingConfiguration, realMatcher(false));
+    assert.deepEqual(duringSetup, { allow: true, source: "setup-bootstrap" }, call.tool_name);
+
+    // Configured and working: judged like any other call, never waved through.
+    const calls: ToolCallInput[] = [];
+    const judged = await evaluatePreToolUse(
+      call,
+      () => guardReturning({ allow: false, verdict: "BLOCK", reason: "policy" }, calls),
+      realMatcher(true),
+    );
+    assert.equal(calls.length, 1, call.tool_name);
+    assert.equal(calls[0]?.toolName, call.tool_name);
+    assert.equal(judged.allow, false, call.tool_name);
+
+    // Configured but broken: fail closed, with no exemption to fall back on.
+    const broken = await evaluatePreToolUse(call, missingConfiguration, realMatcher(true));
+    assert.deepEqual(
+      broken,
+      {
+        allow: false,
+        verdict: "ERROR",
+        reason: "Atbash ERROR: configuration is missing or invalid.",
+      },
+      call.tool_name,
+    );
   }
 });
 

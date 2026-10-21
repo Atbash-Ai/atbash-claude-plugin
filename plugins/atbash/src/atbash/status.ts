@@ -1,6 +1,11 @@
 import { Atbash, type AgentPolicy } from "@atbash/sdk";
 
-import { resolveGuardConfiguration, resolveTimeoutMs } from "./guard.js";
+import {
+  assertJudgeEndpointAllowed,
+  GuardConfigError,
+  resolveGuardConfiguration,
+  resolveTimeoutMs,
+} from "./guard.js";
 
 export interface StatusConfiguration {
   source: "profile" | "legacy";
@@ -36,6 +41,8 @@ export interface StatusClient {
 export type StatusClientFactory = () => StatusClient;
 
 function createStatusClient(): StatusClient {
+  // The same endpoint rule as the hook: status must not report "ready" for a judge the hook refuses.
+  assertJudgeEndpointAllowed();
   const configuration = resolveGuardConfiguration("claude");
   const client = Atbash.fromConfig({
     failClosed: true,
@@ -63,11 +70,14 @@ export async function getAtbashStatus(
   let client: StatusClient;
   try {
     client = createClient();
-  } catch {
+  } catch (error) {
     return {
       ready: false,
       state: "configuration_error",
-      message: "Atbash configuration is missing or invalid.",
+      message:
+        error instanceof GuardConfigError
+          ? error.message
+          : "Atbash configuration is missing or invalid.",
     };
   }
 

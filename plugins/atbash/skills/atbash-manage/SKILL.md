@@ -7,9 +7,11 @@ description: Make an approved change to an existing Atbash agent from Claude Cod
 
 Every on-chain change requires a fresh browser authorization. A prior setup, active profile, existing browser login, or agent private key does not authorize a new owner-level mutation.
 
-Start `manage start --host claude` through this skill's `scripts/atbash-control.mjs` launcher. Show the verification URL and code, then inspect the job after wallet verification. Build a non-secret plan JSON with one exact `update_agent` action using the discovered organization, network, and agent public key plus only the fields the user asked to change. Submit it with `manage plan <job-id> --input <path>` through the launcher.
+Start `manage start --host claude` through this skill's `scripts/atbash-control.mjs` launcher. Show the verification URL and code, then inspect the job after wallet verification. Build a non-secret plan JSON with one exact `update_agent` action using the discovered organization, network, and agent public key plus only the fields the user asked to change. Write it to the job's `planPath` (returned by `manage start` and `manage inspect`; the helper accepts no other location) and submit it with `manage plan <job-id> --input <planPath>` through the launcher.
 
 The user reviews and signs the exact change in Connect Atbash. Do not click approval controls or sign for them. Inspect and continue until the receipt is complete. If any approved step partially completed, report it and start a new management session for further work.
+
+If the user wants to stop before signing, run `manage cancel <job-id>` through the launcher: it cancels the authorization, so its link stops working, and deletes the job's local files. Run it too when the session was cancelled, rejected, or expired; if the helper reports that the session had already ended, the cleanup still succeeded. Do not cancel after the user signed the change; let it finish and report the receipt.
 
 Supported changes are agent `name`, `purpose`, `risk`, and `active`. Billing upgrades, ownership transfer, key rotation/recovery, certification, policies, mandate, and accountability require their dedicated dashboard flows until the control API explicitly advertises those actions.
 

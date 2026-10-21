@@ -1,13 +1,21 @@
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
-import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
+import { createAtbashGuard, GuardConfigError, type ToolCallGuard } from "../atbash/guard.js";
+import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
+import {
+  checkSelfProtection,
+  defaultSelfProtectionContext,
+  selfProtectionReason,
+  type SelfProtectionContext,
+  type SelfProtectionHit,
+} from "./self-protection.js";
 
 export type GuardFactory = () => ToolCallGuard;
 
 export type HookOutcome =
-  | { allow: true; source: "atbash" }
+  | { allow: true; source: "atbash" | "setup-bootstrap" }
   | { allow: false; reason: string; verdict: "HOLD" | "BLOCK" | "ERROR" };
 
 function formatReference(toolCallId: string | undefined): string {
@@ -38,11 +46,44 @@ function denyFromDecision(decision: Decision): HookOutcome {
 export async function evaluatePreToolUse(
   input: PreToolUseInput,
   createGuard: GuardFactory = createAtbashGuard,
+  bootstrap: SetupBootstrap = createSetupBootstrap(),
+  protection: SelfProtectionContext = defaultSelfProtectionContext(input.cwd),
 ): Promise<HookOutcome> {
+  // Local and deterministic, before the judge or even the configuration: a call that would switch
+  // Atbash off or re-point it is denied whatever the judge would say, and whether or not Atbash is
+  // configured. A failure of the check itself is a deny, never a pass to the judge.
+  // The one exception is an exact onboarding plan step (bootstrap.isPlanStep): a non-secret plan
+  // under <config>/plans/ that the user still signs in the browser. It is judged like any other call.
+  let hit: SelfProtectionHit | undefined;
+  try {
+    if (bootstrap.isPlanStep?.(input) !== true) {
+      hit = checkSelfProtection(input.tool_name, input.tool_input, protection);
+    }
+  } catch {
+    return {
+      allow: false,
+      verdict: "ERROR",
+      reason: "Atbash ERROR: the local self-protection check failed.",
+    };
+  }
+  if (hit !== undefined) {
+    return { allow: false, verdict: "BLOCK", reason: selfProtectionReason(hit) };
+  }
+
   let guard: ToolCallGuard;
   try {
     guard = createGuard();
-  } catch {
+  } catch (error) {
+    // A refused judge endpoint is a configuration the user set, never "not set up yet".
+    if (error instanceof GuardConfigError) {
+      return { allow: false, verdict: "ERROR", reason: error.message };
+    }
+    // Only a missing configuration enters setup mode; an invalid one stays fail closed.
+    if (!bootstrap.hasConfiguration()) {
+      return bootstrap.isSetupCall(input)
+        ? { allow: true, source: "setup-bootstrap" }
+        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+    }
     return {
       allow: false,
       verdict: "ERROR",

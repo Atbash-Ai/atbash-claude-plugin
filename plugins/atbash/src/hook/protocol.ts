@@ -1,3 +1,5 @@
+import { posix, win32 } from "node:path";
+
 export class HookProtocolError extends Error {
   constructor(message: string) {
     super(message);
@@ -18,6 +20,7 @@ export interface PreToolUseInput {
   turn_id?: string;
   agent_id?: string;
   agent_type?: string;
+  host?: "cursor";
 }
 
 export interface PreToolUseDenyOutput {
@@ -62,7 +65,8 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
   if (!isRecord(parsed)) {
     throw new HookProtocolError("Hook input must be a JSON object.");
   }
-  if (parsed.hook_event_name !== "PreToolUse") {
+  const cursor = parsed.hook_event_name === "preToolUse";
+  if (parsed.hook_event_name !== "PreToolUse" && !cursor) {
     throw new HookProtocolError("Hook input event must be PreToolUse.");
   }
   if (!Object.hasOwn(parsed, "tool_input")) {
@@ -72,7 +76,33 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
   // The permission mode is forwarded to Atbash as judgment context only. It is
   // validated as a non-empty string rather than a closed enum so a new host
   // permission mode does not deny every tool call.
-  const permissionMode = requireString(parsed, "permission_mode");
+  const permissionMode =
+    cursor && parsed.permission_mode === undefined
+      ? "unknown"
+      : requireString(parsed, "permission_mode");
+
+  let cwd: string;
+  if (cursor) {
+    requireString(parsed, "cursor_version");
+    const roots = parsed.workspace_roots;
+    if (
+      !Array.isArray(roots) ||
+      roots.length === 0 ||
+      roots.some(
+        (root) =>
+          typeof root !== "string" ||
+          root.includes("\0") ||
+          !(posix.isAbsolute(root) || win32.isAbsolute(root)),
+      )
+    ) {
+      throw new HookProtocolError("Cursor workspace_roots must contain absolute paths.");
+    }
+    // Cursor represents Windows roots as /C:/... . These fields are judgment
+    // context only: never read a transcript or resolve files from this value.
+    cwd = roots[0].replace(/^\/([A-Za-z]:\/)/, "$1");
+  } else {
+    cwd = requireString(parsed, "cwd");
+  }
 
   // Claude Code omits transcript_path in some hook contexts; when present it
   // must be a string or null. The transcript is never read either way.
@@ -93,7 +123,7 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
 
   return {
     hook_event_name: "PreToolUse",
-    cwd: requireString(parsed, "cwd"),
+    cwd,
     permission_mode: permissionMode,
     session_id: requireString(parsed, "session_id"),
     tool_input: parsed.tool_input,
@@ -104,6 +134,7 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
     ...(turnId === undefined ? {} : { turn_id: turnId }),
     ...(agentId === undefined ? {} : { agent_id: agentId }),
     ...(agentType === undefined ? {} : { agent_type: agentType }),
+    ...(cursor ? { host: "cursor" as const } : {}),
   };
 }
 
@@ -111,6 +142,41 @@ export function sanitizeReason(reason: string, fallback: string): string {
   const normalized = reason.replaceAll(/\s+/g, " ").trim();
   const safeReason = normalized.length === 0 ? fallback : normalized;
   return safeReason.slice(0, 800);
+}
+
+/**
+ * The private channel between the bundled hook and the shipped shim (src/hook/shim.cjs). The shim
+ * installs a function under this well-known symbol before it loads the bundle; the bundle hands its
+ * decision to that function instead of writing it to stdout. stdout is then never a decision
+ * channel: whatever a library prints there is diverted to stderr by the shim, so no log line can be
+ * mistaken for the hook's answer. The symbol is registered (Symbol.for), so the bundle and the shim
+ * agree on it without sharing code.
+ */
+export const HOOK_ANSWER_CHANNEL: unique symbol = Symbol.for("atbash.hook.answer");
+
+export type HookAnswer = (output: string) => void;
+
+/**
+ * The channel as it was at load time. The shim installs it before the bundle loads, so under the
+ * shim it is always here; capturing it once means nothing that happens later in the process (a
+ * reassigned `globalThis`, another realm) can steer a decision into the bare-run fallback below,
+ * which under the shim would be a diverted log line rather than a decision.
+ */
+const channelAtLoad: unknown = (globalThis as { [HOOK_ANSWER_CHANNEL]?: unknown })[
+  HOOK_ANSWER_CHANNEL
+];
+
+/** Hand the decision to the shim when it is present; write it to stdout when running bare. */
+export function deliverDecision(output: string): void {
+  // The load-time capture or stdout, never a call-time lookup: a function installed under the
+  // symbol after load (a bare run with in-process code) must not receive the decision.
+  if (typeof channelAtLoad === "function") {
+    (channelAtLoad as HookAnswer)(output);
+    return;
+  }
+  if (output !== "") {
+    process.stdout.write(`${output}\n`);
+  }
 }
 
 export function serializeDeny(reason: string): string {

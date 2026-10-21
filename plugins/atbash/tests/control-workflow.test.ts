@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createPublicKey, publicEncrypt, type JsonWebKey } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { ControlApiError } from "../src/control/client.js";
 import { generateKeyDeliveryPair } from "../src/control/keys.js";
 import {
   parseProposalActions,
@@ -16,7 +17,9 @@ import { ControlStore, type PendingJob } from "../src/control/store.js";
 import {
   activateCompletedJob,
   cancelControlJob,
+  continueControlJob,
   startControlJob,
+  submitControlPlan,
 } from "../src/control/workflow.js";
 
 test("plan parser permits only the bounded dashboard action vocabulary", () => {
@@ -80,6 +83,105 @@ test("plan parser permits only the bounded dashboard action vocabulary", () => {
         ],
       }),
     /same network/,
+  );
+});
+
+test("plan errors name the action and the field to fix", () => {
+  const agent = {
+    type: "create_agent",
+    network: "private",
+    organization: "acme_ai",
+    name: "claude dev",
+    purpose: "Coding assistant",
+    risk: "medium",
+    keySource: "generate_in_browser",
+  };
+
+  assert.throws(() => parseProposalActions({ actions: [{ type: "create_account" }, agent] }), {
+    message:
+      'Plan action 1 (create_account): "network" must be "public" or "private" on every action.',
+  });
+  assert.throws(() => parseProposalActions({ network: "private", actions: [agent] }), {
+    message: "Plan contains unknown fields: network. Allowed fields: actions.",
+  });
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [{ type: "create_organization", network: "private", name: "acme_ai" }, agent],
+      }),
+    { message: "Plan action 1 (create_organization): Organization description is required." },
+  );
+});
+
+test("the Free plan follows the plan's network; the dashboard decides where it lives", () => {
+  const actions = parseProposalActions({
+    actions: [
+      { type: "create_account", network: "private" },
+      { type: "create_organization", network: "private", name: "acme_ai", description: "Acme" },
+      { type: "activate_free_plan", network: "private", organization: "acme_ai" },
+    ],
+  });
+
+  assert.deepEqual(actions[2], {
+    type: "activate_free_plan",
+    network: "private",
+    organization: "acme_ai",
+  });
+});
+
+test("the setup skill's example plan is accepted as written", async () => {
+  const skill = await readFile("skills/atbash-setup/SKILL.md", "utf8");
+  const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(skill)?.[1];
+  assert.ok(example, "SKILL.md documents an example plan");
+
+  const actions = parseProposalActions(JSON.parse(example));
+  validateProposalActionsForPurpose(actions, "onboard");
+  assert.deepEqual(
+    actions.map((action) => action.type),
+    ["create_account", "create_organization", "activate_free_plan", "create_agent"],
+  );
+});
+
+test("a new agent can carry a versioned starting-policy preset and nothing else", () => {
+  const agent = (policy?: unknown) => ({
+    type: "create_agent",
+    network: "public",
+    organization: "Acme",
+    name: "Claude",
+    purpose: "Review code",
+    risk: "medium",
+    keySource: "generate_in_browser",
+    ...(policy === undefined ? {} : { policy }),
+  });
+
+  const [withPolicy] = parseProposalActions({
+    actions: [agent({ preset: "developer", version: 1 })],
+  });
+  assert.deepEqual(withPolicy, { ...agent(), policy: { preset: "developer", version: 1 } });
+  const [withoutPolicy] = parseProposalActions({ actions: [agent()] });
+  assert.equal("policy" in (withoutPolicy ?? {}), false);
+
+  for (const policy of [
+    { preset: "anything", version: 1 },
+    { preset: "developer", version: 2 },
+    { preset: "developer", version: 1, rules: "- [Financial] LOW -> PASS" },
+    "developer",
+    null,
+  ]) {
+    assert.throws(() => parseProposalActions({ actions: [agent(policy)] }), /policy|unknown/i);
+  }
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [
+          {
+            type: "create_account",
+            network: "public",
+            policy: { preset: "developer", version: 1 },
+          },
+        ],
+      }),
+    /unknown/i,
   );
 });
 
@@ -159,10 +261,61 @@ test("start returns only public pairing data and persists helper secrets locally
   });
 
   assert.equal(output.nextAction, "OPEN_BROWSER");
+  assert.equal(output.planPath, join(root, "plans", `${output.jobId}.json`));
+  if (process.platform !== "win32")
+    assert.equal((await stat(join(root, "plans"))).mode & 0o777, 0o700);
   assert.doesNotMatch(JSON.stringify(output), /SSSS|PRIVATE KEY/);
   const stored = await store.readJob(output.jobId);
   assert.equal(stored.sessionSecret, "S".repeat(43));
   assert.match(stored.keyDeliveryPrivateKeyPem, /PRIVATE KEY/);
+});
+
+test("continuing an activated job reports agent status without failing on status errors", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atbash-continue-"));
+  const store = new ControlStore(root);
+  const job: PendingJob = {
+    schemaVersion: 1,
+    jobId: "job-continue",
+    host: "claude",
+    purpose: "onboard",
+    serviceOrigin: "https://atbash.ai",
+    sessionId: "session-id",
+    sessionSecret: "consumed-after-activation",
+    verificationCode: "ABCD-EFGH",
+    verificationUri: "https://atbash.ai/connect/plugin",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    pollIntervalMs: 2_000,
+    keyDeliveryPrivateKeyPem: "destroyed-after-activation",
+    activatedProfileId: "claude-job-continue",
+  };
+  await store.saveJob(job);
+
+  const ready = await continueControlJob(job.jobId, store, async () => ({
+    ready: true,
+    state: "ready",
+  }));
+  const unavailable = await continueControlJob(job.jobId, store, async () => {
+    throw new Error("network down");
+  });
+
+  assert.equal(ready.nextAction, "DONE");
+  assert.deepEqual(ready.agentStatus, { ready: true, state: "ready" });
+  assert.equal(unavailable.nextAction, "DONE");
+  assert.equal(unavailable.agentStatus?.state, "service_error");
+  assert.match(unavailable.message ?? "", /claude-job-continue is active/);
+});
+
+test("plans are accepted only from the job's plan path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atbash-plan-"));
+  const store = new ControlStore(root);
+  const jobId = "job-plan-path";
+
+  for (const path of [join(root, "elsewhere.json"), join(root, "pending", `${jobId}.json`)]) {
+    await assert.rejects(submitControlPlan(jobId, path, store), /Write the plan to/);
+  }
+  await store.preparePlanDirectory();
+  await writeFile(store.planPath(jobId), JSON.stringify({ actions: [] }));
+  assert.deepEqual(await store.readPlan(jobId), { actions: [] });
 });
 
 test("completed browser execution activates a host profile and destroys transient authority", async () => {
@@ -353,6 +506,94 @@ test("cancelling a control job removes its local pending secrets", async () => {
   const result = await cancelControlJob(job.jobId, store, client as never);
 
   assert.equal(result.status, "cancelled");
+  assert.match(result.message ?? "", /local data was removed/);
   assert.deepEqual(calls, [[job.sessionId, job.sessionSecret]]);
   await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+// AT-576: Atbash answers 404 to cancelling a session that is no longer active.
+// The local job still holds the session secret and the key-delivery private key.
+async function savedCancelJob(): Promise<{ store: ControlStore; job: PendingJob }> {
+  const store = new ControlStore(await mkdtemp(join(tmpdir(), "atbash-cancel-ended-")));
+  const job: PendingJob = {
+    schemaVersion: 1,
+    jobId: "job-ended",
+    host: "claude",
+    purpose: "onboard",
+    serviceOrigin: "https://atbash.ai",
+    sessionId: "session-id",
+    sessionSecret: "S".repeat(43),
+    verificationCode: "ABCD-EFGH",
+    verificationUri: "https://atbash.ai/connect/plugin",
+    expiresAt: "2020-01-01T00:00:00.000Z",
+    pollIntervalMs: 2_000,
+    keyDeliveryPrivateKeyPem: "pending-private-key",
+  };
+  await store.saveJob(job);
+  return { store, job };
+}
+
+function endedSessionClient(status: string | null, keyDeliveries: unknown[] = []) {
+  return {
+    async cancelSession() {
+      throw new ControlApiError("Session not found or no longer active", 404);
+    },
+    async getSession() {
+      if (status === null) throw new ControlApiError("Session not found", 404);
+      return { status };
+    },
+    async getLatestExecution() {
+      return { keyDeliveries };
+    },
+  };
+}
+
+test("cancelling an expired session still removes its local secrets", async () => {
+  const { store, job } = await savedCancelJob();
+
+  const result = await cancelControlJob(job.jobId, store, endedSessionClient("expired") as never);
+
+  assert.equal(result.status, "expired");
+  assert.match(result.message ?? "", /already ended/);
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+test("cancelling a session Atbash no longer knows still removes its local secrets", async () => {
+  const { store, job } = await savedCancelJob();
+
+  await cancelControlJob(job.jobId, store, endedSessionClient(null) as never);
+
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+test("cancel refuses to delete a completed setup whose new agent key is not activated", async () => {
+  const { store, job } = await savedCancelJob();
+
+  await assert.rejects(
+    cancelControlJob(job.jobId, store, endedSessionClient("completed", [{}]) as never),
+    /setup continue job-ended/,
+  );
+  // The key-delivery private key is the only way to open the delivered agent key.
+  assert.equal((await store.readJob(job.jobId)).keyDeliveryPrivateKeyPem, "pending-private-key");
+});
+
+test("cancel removes a completed job that delivered no agent key", async () => {
+  const { store, job } = await savedCancelJob();
+
+  const result = await cancelControlJob(job.jobId, store, endedSessionClient("completed") as never);
+
+  assert.equal(result.status, "completed");
+  await assert.rejects(store.readJob(job.jobId), { code: "ENOENT" });
+});
+
+test("cancel keeps the local job when Atbash cannot be reached, so it can be retried", async () => {
+  const { store, job } = await savedCancelJob();
+  const client = {
+    async cancelSession() {
+      throw new ControlApiError("Atbash could not be reached.");
+    },
+  };
+
+  await assert.rejects(cancelControlJob(job.jobId, store, client as never), /could not be reached/);
+  assert.equal((await store.readJob(job.jobId)).jobId, job.jobId);
 });

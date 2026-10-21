@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ControlClient, resolveControlOrigin } from "../src/control/client.js";
+import { DEFAULT_ENDPOINT } from "@atbash/sdk";
+
+import {
+  ControlClient,
+  DEFAULT_CONTROL_ORIGIN,
+  resolveControlOrigin,
+} from "../src/control/client.js";
 import { decryptAgentKey, generateKeyDeliveryPair } from "../src/control/keys.js";
 import { ControlStore, type PendingJob } from "../src/control/store.js";
 
@@ -103,4 +109,8 @@ test("control service requires HTTPS except on loopback", () => {
   assert.equal(resolveControlOrigin("https://example.com/path"), "https://example.com");
   assert.equal(resolveControlOrigin("http://127.0.0.1:3000"), "http://127.0.0.1:3000");
   assert.throws(() => resolveControlOrigin("http://example.com"), /HTTPS/);
+});
+
+test("pairing defaults to the bundled SDK's Atbash service", () => {
+  assert.equal(DEFAULT_CONTROL_ORIGIN, new URL(DEFAULT_ENDPOINT).origin);
 });

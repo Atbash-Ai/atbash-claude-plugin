@@ -16,6 +16,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "build:marketplace": "npm run build:marketplace --workspace @atbash/claude-plugin",
+    "build:marketplace:dev": "npm run build:marketplace:dev --workspace @atbash/claude-plugin",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint .",
