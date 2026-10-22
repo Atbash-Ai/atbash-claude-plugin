@@ -49,6 +49,8 @@ export interface SetupBootstrap {
   isSetupCall(input: PreToolUseInput): boolean;
   /** The exact plan steps self-protection lets through (see isPlanStep). */
   isPlanStep?(input: PreToolUseInput): boolean;
+  /** The exact helper commands self-protection lets through (see isHelperStep). */
+  isHelperStep?(input: PreToolUseInput): boolean;
 }
 
 export interface SetupBootstrapOptions {
@@ -243,6 +245,57 @@ export function isPlanStep(input: PreToolUseInput, options: SetupBootstrapOption
 }
 
 /**
+ * Helper commands, by the skill whose launcher runs them. A real install runs the launcher from
+ * `~/.claude/plugins/cache/…`, a path self-protection guards, so without this every setup command
+ * was denied as a change to installed Claude Code plugins. The plan commands are plan steps.
+ * `profile disconnect` is not here: it switches Atbash off, which is the user's to do.
+ */
+const HELPER_COMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  "atbash-setup": new Set([
+    "setup start",
+    "setup inspect",
+    "setup continue",
+    "setup cancel",
+    "profile connect",
+    "profile list",
+    "profile switch",
+  ]),
+  "atbash-manage": new Set(["manage start", "manage inspect", "manage continue", "manage cancel"]),
+};
+
+/**
+ * Exactly `node <the plugin's own launcher> <helper command> [plain arguments]`: the same strict
+ * form setup mode accepts, with no `--service`. Running the plugin's own helper cannot switch
+ * Atbash off or re-point it, except `profile switch`, which selects another agent; it passes only
+ * while no configuration exists. The call is still judged once Atbash is configured.
+ */
+export function isHelperStep(
+  input: PreToolUseInput,
+  options: SetupBootstrapOptions = {},
+  configured: () => boolean = () => hasAtbashConfiguration(options),
+): boolean {
+  if (input.tool_name !== "Bash" || options.pluginRoot === undefined) return false;
+  const command = record(input.tool_input)?.command;
+  if (typeof command !== "string") return false;
+  const words = splitPlainCommand(command);
+  if (!words || words.length < 4 || words[0] !== "node") return false;
+  const [, script = "", area = "", action = "", ...args] = words;
+  if (args.some((arg) => arg === "--service" || arg.startsWith("--service="))) return false;
+  const name = `${area} ${action}`;
+  const pluginRoot = options.pluginRoot;
+  const matches = Object.entries(HELPER_COMMANDS).some(
+    ([skill, commands]) =>
+      commands.has(name) &&
+      samePath(
+        script,
+        input.cwd,
+        join(pluginRoot, "skills", skill, "scripts", "atbash-control.mjs"),
+      ),
+  );
+  return matches && (name !== "profile switch" || !configured());
+}
+
+/**
  * Claude Code writes a background task's output to
  * `<tmp>/claude/<project>/<session-id>/tasks/<task-id>.output`, named after the
  * session the hook is told about. Requiring that shape, for this session only,
@@ -331,5 +384,6 @@ export function createSetupBootstrap(options: SetupBootstrapOptions = {}): Setup
     hasConfiguration: () => hasAtbashConfiguration(resolved),
     isSetupCall: (input) => isSetupToolCall(input, resolved),
     isPlanStep: (input) => isPlanStep(input, resolved),
+    isHelperStep: (input) => isHelperStep(input, resolved),
   };
 }
