@@ -8,7 +8,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/runtime/pre-tool-use.cjs\"",
-            "timeout": 35
+            "timeout": 35,
+            "onFailure": "block"
           }
         ]
       }
