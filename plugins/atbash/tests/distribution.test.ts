@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import type { PreToolUseInput } from "../src/hook/protocol.js";
@@ -89,6 +96,39 @@ test("built runtime lets setup run before any configuration exists", () => {
   assert.equal(allowed.status, 0, allowed.stderr);
   assert.equal(allowed.stdout, "");
   assert.deepEqual(JSON.parse(chained.stdout), notSetUp);
+});
+
+test("built runtime lets setup run from the plugin cache a real install uses", () => {
+  // Claude Code runs a marketplace plugin from ~/.claude/plugins/cache/…, a path self-protection
+  // guards. A link there to this package reproduces that install without copying the runtime.
+  const home = mkdtempSync(join(tmpdir(), "atbash-cache-"));
+  const installed = join(home, ".claude", "plugins", "cache", "atbash-ai", "atbash", "0.0.0");
+  mkdirSync(dirname(installed), { recursive: true });
+  symlinkSync(resolve("."), installed, "junction");
+  const launcher = join(installed, "skills", "atbash-setup", "scripts", "atbash-control.mjs");
+  const run = (command: string) =>
+    spawnSync(process.execPath, [join(installed, "runtime", "pre-tool-use.cjs")], {
+      cwd: home,
+      encoding: "utf8",
+      env: {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => !key.startsWith("ATBASH_")),
+        ),
+        HOME: home,
+        USERPROFILE: home,
+        ATBASH_CONFIG_DIR: join(home, ".config", "atbash"),
+      },
+      input: JSON.stringify(
+        makeHookInput({ tool_name: "Bash", tool_input: { command }, cwd: home }),
+      ),
+    });
+
+  const start = run(`node "${launcher}" setup start --host claude`);
+  const disconnect = run(`node "${launcher}" profile disconnect --host claude`);
+
+  assert.equal(start.status, 0, start.stderr);
+  assert.equal(start.stdout, "");
+  assert.match(disconnect.stdout, /installed Claude Code plugins/);
 });
 
 test("marketplace runtime includes every supported native target", () => {

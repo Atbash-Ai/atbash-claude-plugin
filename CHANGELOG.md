@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Let guided setup run when the plugin is installed from a marketplace: self-protection denied every setup helper command, because a real install runs the helper from `~/.claude/plugins/cache/`. The exact helper commands now pass self-protection and are still judged once configured; `profile disconnect` stays denied, and `profile switch` passes only before any configuration exists.
 - Build the setup plan on the network the Atbash deployment serves (discovery's `availableNetworks`) and allow the Free plan on private, so new users on a private-only deployment are no longer onboarded onto public. The setup skill now documents the exact plan format, and plan errors name the action and field to fix.
 - Self-protection lets the onboarding plan step through: a `Write` of exactly `<config>/plans/<job-id>.json` (not a symlink) and the exact `setup|manage plan <job-id> --input <that file>` helper command. Without it the guided setup and management flows could never submit a plan. Everything else under the Atbash configuration directory stays protected, and the step is still judged. A self-protection check that fails is always a deny, including for setup calls before configuration.
 - Give each new agent a starting policy: the setup plan suggests a `developer`, `devops`, or `full_baseline` preset, which the owner can switch on the Connect Atbash review page before approving.
