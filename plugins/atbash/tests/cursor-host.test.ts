@@ -12,11 +12,13 @@ import { createJudgeSigner } from "./local-judge.js";
 test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", async () => {
   for (const verdict of ["ALLOW", "BLOCK", "HOLD"] as const) {
     let judged = false;
+    let callId = "";
     // A loopback judge is accepted only as a developer's signed local judge (see judge-endpoint.test).
     const signer = createJudgeSigner();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      req.resume();
+      const received: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => received.push(chunk));
       req.on("end", () => {
         res.setHeader("content-type", "application/json");
         if (url.pathname === "/api/ai/exists") {
@@ -38,13 +40,20 @@ test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", a
           );
         } else if (url.pathname === "/api/v1/judge") {
           judged = true;
+          // The answer names the call it is for: an SDK that enforces the organisation's mode on
+          // the client accepts a signed answer only for its own call.
+          const sent = JSON.parse(Buffer.concat(received).toString("utf8")) as {
+            tool_call_id: string;
+          };
+          callId = sent.tool_call_id;
           const body = Buffer.from(
             JSON.stringify({
               verdict,
               action_type: verdict === "HOLD" ? "hold_for_user_confirm" : verdict.toLowerCase(),
-              allow: verdict === "ALLOW",
+              // No `allow` on a HOLD: the SDK reads an explicit `allow: false` as a BLOCK.
+              ...(verdict === "HOLD" ? {} : { allow: verdict === "ALLOW" }),
               reason: "cursor fixture",
-              tool_call_id: "cursor-test",
+              tool_call_id: callId,
             }),
           );
           res.setHeader("X-Atbash-Signature", signer.sign(body));
@@ -100,13 +109,14 @@ test("Cursor stdin through shipped shim preserves judge ALLOW BLOCK and HOLD", a
       );
       assert.equal(result.code, 0, result.stderr);
       assert.equal(judged, true, result.stdout);
+      assert.match(callId, /\S/);
       if (verdict === "ALLOW") assert.equal(result.stdout, "");
       else
         assert.deepEqual(JSON.parse(result.stdout), {
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: `Atbash ${verdict}: cursor fixture Reference: cursor-test.`,
+            permissionDecisionReason: `Atbash ${verdict}: cursor fixture Reference: ${callId}.`,
           },
         });
     } finally {

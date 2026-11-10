@@ -15,11 +15,19 @@ import http from "node:http";
 
 export interface LocalJudgeOptions {
   delayMs?: number;
-  verdict?: "ALLOW" | "BLOCK";
+  verdict?: "ALLOW" | "BLOCK" | "HOLD";
   /** "valid" (default): signed with this judge's key; "none": no header; "foreign": another key. */
   signature?: "valid" | "none" | "foreign";
   /** The `allow` field of an ALLOW answer (default true); false makes the answer inconsistent. */
   allowField?: boolean;
+  /**
+   * The organisation's mode, stated only to a client that asks to enforce it itself (the
+   * `X-Atbash-Client-Enforcement` header): the answer then carries the true verdict, the mode, the
+   * header's echo and the call's own id, as the Atbash judge does.
+   */
+  enforcementMode?: "enforce" | "shadow" | "monitor" | "off";
+  /** Answer such a client at once with `shadow_recorded` and no verdict (the fast acknowledgement). */
+  fastAck?: boolean;
 }
 
 export interface LocalJudge {
@@ -61,7 +69,14 @@ export function createJudgeSigner(): { verifyPubKey: string; sign(body: Buffer):
 }
 
 export async function startLocalJudge(options: LocalJudgeOptions = {}): Promise<LocalJudge> {
-  const { delayMs = 0, verdict = "ALLOW", signature = "valid", allowField = true } = options;
+  const {
+    delayMs = 0,
+    verdict = "ALLOW",
+    signature = "valid",
+    allowField = true,
+    enforcementMode,
+    fastAck = false,
+  } = options;
   const keys = generateKeyPairSync("ec", { namedCurve: "secp256k1" });
   const foreign = generateKeyPairSync("ec", { namedCurve: "secp256k1" });
   const verifyPubKey = compressedPubKey(keys.publicKey);
@@ -69,7 +84,8 @@ export async function startLocalJudge(options: LocalJudgeOptions = {}): Promise<
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     hits.push(`${req.method} ${url.pathname}`);
-    req.resume();
+    const received: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => received.push(chunk));
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
       const answer = (payload: unknown, signed = false) =>
@@ -92,22 +108,46 @@ export async function startLocalJudge(options: LocalJudgeOptions = {}): Promise<
       } else if (url.pathname === "/api/risk-engine") {
         answer({ policy: "", is_custom: false, default_policy: "default", is_jailed: false });
       } else if (url.pathname === "/api/v1/judge") {
+        // A HOLD carries no `allow` field: the SDK reads an explicit `allow: false` as a BLOCK.
+        const judgment =
+          verdict === "ALLOW"
+            ? { verdict, action_type: "allow", allow: allowField, reason: "routine" }
+            : verdict === "HOLD"
+              ? {
+                  verdict,
+                  action_type: "hold_for_user_confirm",
+                  reason: "denied by the test judge",
+                }
+              : { verdict, action_type: "block", allow: false, reason: "denied by the test judge" };
+        const optIn = req.headers["x-atbash-client-enforcement"];
+        if (typeof optIn !== "string") {
+          answer({ ...judgment, tool_call_id: "tc-1" }, true);
+          return;
+        }
+        // A client that enforces the mode itself accepts only an answer bound to its own call.
+        let callId = "tc-1";
+        try {
+          const sent = JSON.parse(Buffer.concat(received).toString("utf8")) as {
+            tool_call_id?: unknown;
+          };
+          if (typeof sent.tool_call_id === "string") callId = sent.tool_call_id;
+        } catch {
+          // keep the fixed id; the SDK then refuses the answer as not its own
+        }
+        if (enforcementMode === undefined) {
+          answer({ ...judgment, tool_call_id: callId }, true);
+          return;
+        }
+        const mode = {
+          tool_call_id: callId,
+          client_enforcement: optIn,
+          enforcement_mode: enforcementMode,
+          enforced: enforcementMode === "enforce",
+        };
         answer(
-          verdict === "BLOCK"
-            ? {
-                verdict: "BLOCK",
-                action_type: "block",
-                allow: false,
-                reason: "denied by the test judge",
-                tool_call_id: "tc-1",
-              }
-            : {
-                verdict: "ALLOW",
-                action_type: "allow",
-                allow: allowField,
-                reason: "routine",
-                tool_call_id: "tc-1",
-              },
+          fastAck
+            ? { status: "shadow_recorded", verdict: null, ...mode }
+            : { ...judgment, ...mode },
           true,
         );
       } else {

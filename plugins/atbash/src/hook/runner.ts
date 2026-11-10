@@ -1,6 +1,13 @@
-import type { Decision, ToolCallInput } from "@atbash/sdk";
+import type { ToolCallInput } from "@atbash/sdk";
 
-import { createAtbashGuard, GuardConfigError, type ToolCallGuard } from "../atbash/guard.js";
+import {
+  createAtbashGuard,
+  describeUnenforcedPermit,
+  GuardConfigError,
+  type GuardDecision,
+  type ToolCallGuard,
+  type UnenforcedPermit,
+} from "../atbash/guard.js";
 import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
@@ -15,7 +22,15 @@ import {
 export type GuardFactory = () => ToolCallGuard;
 
 export type HookOutcome =
-  | { allow: true; source: "atbash" | "setup-bootstrap" }
+  | {
+      allow: true;
+      source: "atbash" | "setup-bootstrap";
+      /**
+       * Present when the organisation's enforcement mode (shadow, monitor or off), not the judge's
+       * verdict, permitted the call: what would have happened under enforcement, for the local log.
+       */
+      unenforced?: UnenforcedPermit;
+    }
   | { allow: false; reason: string; verdict: "HOLD" | "BLOCK" | "ERROR" };
 
 function formatReference(toolCallId: string | undefined): string {
@@ -25,7 +40,7 @@ function formatReference(toolCallId: string | undefined): string {
   return ` Reference: ${toolCallId.trim().slice(0, 200)}.`;
 }
 
-function denyFromDecision(decision: Decision): HookOutcome {
+function denyFromDecision(decision: GuardDecision): HookOutcome {
   const verdict =
     decision.verdict === "HOLD" || decision.verdict === "BLOCK" ? decision.verdict : "ERROR";
   const fallback =
@@ -99,7 +114,7 @@ export async function evaluatePreToolUse(
     context: buildAtbashContext(input),
   };
 
-  let decision: Decision;
+  let decision: GuardDecision;
   try {
     decision = await guard.auditToolCall(toolCall);
   } catch {
@@ -111,7 +126,10 @@ export async function evaluatePreToolUse(
   }
 
   if (decision.allow === true && decision.verdict === "ALLOW") {
-    return { allow: true, source: "atbash" };
+    // The enforcement mode travels with the permit: a call the organisation's signed shadow,
+    // monitor or off mode let through carries what the judge would have done.
+    const unenforced = describeUnenforcedPermit(decision);
+    return { allow: true, source: "atbash", ...(unenforced === undefined ? {} : { unenforced }) };
   }
 
   return denyFromDecision(decision);

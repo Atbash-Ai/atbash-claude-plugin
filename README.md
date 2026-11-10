@@ -2,7 +2,7 @@
 
 Atbash Safety checks Claude Code tool calls through a `PreToolUse` hook. The plugin ships a prebuilt runtime that bundles `@atbash/sdk` and its native bindings, so users never install the SDK or enter chain settings.
 
-While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a canonical SDK result of `allow: true` with verdict `ALLOW` continues.
+While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a canonical SDK result of `allow: true` with verdict `ALLOW` continues. The one case where a refused action runs is an organisation that has chosen not to enforce (shadow, monitor or off mode): see [Shadow mode](#shadow-mode).
 
 While active, the guard is fail closed. A missing key, invalid configuration, network failure, timeout, `HOLD`, `BLOCK`, or malformed decision prevents the pending tool call. Only a judge answer of verdict `ALLOW` with an `allow` action (or the audit tier's explicit no-enforcement marker) continues.
 
@@ -146,19 +146,36 @@ The hook reads these settings:
 
 ## Decision behavior
 
-| Atbash result                               | Claude Code behavior                                              |
-| ------------------------------------------- | ----------------------------------------------------------------- |
-| `ALLOW` with `allow: true`                  | Executes the pending call                                         |
-| `HOLD`                                      | Blocks this attempt and shows its Atbash reference when available |
-| `BLOCK`                                     | Blocks this attempt                                               |
-| `ERROR` or inconsistent output              | Blocks this attempt                                               |
-| Missing/invalid configuration or hook input | Blocks this attempt                                               |
-| Judge still pending at the hard deadline    | Blocks this attempt                                               |
-| Hook runtime cannot load or crashes         | Blocks this attempt                                               |
-| Hook stopped by `SIGTERM`/`SIGINT`/`SIGHUP` | Blocks this attempt                                               |
-| Hook killed with `SIGKILL`                  | Not blocked: the host proceeds (see the host boundary below)      |
+| Atbash result                                                | Claude Code behavior                                              |
+| ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `ALLOW` with `allow: true`                                   | Executes the pending call                                         |
+| `BLOCK` or `HOLD` under a signed shadow, monitor or off mode | Executes the pending call and logs what would have happened       |
+| Recorded, not judged yet (shadow fast acknowledgement)       | Executes the pending call at once and logs the reference          |
+| `HOLD`                                                       | Blocks this attempt and shows its Atbash reference when available |
+| `BLOCK`                                                      | Blocks this attempt                                               |
+| `ERROR` or inconsistent output                               | Blocks this attempt                                               |
+| Missing/invalid configuration or hook input                  | Blocks this attempt                                               |
+| Judge still pending at the hard deadline                     | Blocks this attempt                                               |
+| Hook runtime cannot load or crashes                          | Blocks this attempt                                               |
+| Hook stopped by `SIGTERM`/`SIGINT`/`SIGHUP`                  | Blocks this attempt                                               |
+| Hook killed with `SIGKILL`                                   | Not blocked: the host proceeds (see the host boundary below)      |
 
 For `HOLD`, operator review remains in Atbash. The plugin does not auto-poll or auto-execute an approved action; retry the original request explicitly after approval.
+
+### Shadow mode
+
+An organisation can run an agent in shadow mode (or the whole organisation in monitor or off mode): actions are judged and recorded, but a `BLOCK` or `HOLD` is not applied. The bundled SDK applies that mode on the client, and only when the judge states it in a signed answer bound to the call; a missing, unsigned or unknown mode enforces as usual. This needs an SDK that enforces modes on the client: the development SDK today, the production SDK once it ships the same support.
+
+In such a mode the hook permits the call immediately and tells you what enforcement would have done:
+
+- `would block: <reason>` (or `would hold: <reason>`) when the judge had reached a verdict;
+- `recorded, not judged yet` when the judge acknowledged the call before judging it. This is the fast path: the call does not wait for the judgment, so the verdict is not known locally and appears in the Atbash dashboard under the logged reference.
+
+Each line is written to the hook's standard error (visible with `claude --debug`) and appended, time-stamped, to `~/.config/atbash/shadow.log` (`$ATBASH_CONFIG_DIR/shadow.log` when set). The log is readable by you only, restarts past 1 MiB (the previous file is kept as `shadow.log.1`), and a log that cannot be written never blocks or delays a call.
+
+```bash
+tail -f ~/.config/atbash/shadow.log
+```
 
 ## Coverage and limits
 
