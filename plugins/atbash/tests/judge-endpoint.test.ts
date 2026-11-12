@@ -152,8 +152,9 @@ test("a local judge whose ALLOW is unsigned or signed by another key is denied",
 });
 
 test("a judge ALLOW with allow:false is denied", async () => {
-  // A signed answer that contradicts itself: verdict ALLOW, action_type allow, allow false. The
-  // SDK's auditToolCall maps it to a permit from action_type alone; the hook must not.
+  // A signed answer that contradicts itself: verdict ALLOW, action_type allow, allow false. SDK
+  // 0.9.x mapped it to a permit from action_type alone; the SDK now lets the most restrictive
+  // signal win, and this keeps the hook from ever shipping one that does not.
   const judge = await startLocalJudge({ allowField: false });
   try {
     await withHome(async (home) => {
@@ -168,7 +169,7 @@ test("a judge ALLOW with allow:false is denied", async () => {
         DENY_SHAPE,
         `an allow:false answer was a permit: ${result.stdout}`,
       );
-      assert.match(result.stdout, /allow was not true/, result.stdout);
+      assert.match(result.stdout, /Atbash (?:BLOCK|ERROR)/, result.stdout);
       assert.equal(
         judged(judge.hits),
         true,

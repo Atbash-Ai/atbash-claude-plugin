@@ -12,8 +12,14 @@ export const DEFAULT_ATBASH_TIMEOUT_MS = 30_000;
 export const MIN_ATBASH_TIMEOUT_MS = 1_000;
 export const MAX_ATBASH_TIMEOUT_MS = 30_000;
 
+/**
+ * The SDK's decision, with the field a client-enforcing SDK adds when the organisation's mode let
+ * a refused action run. Declared here because the production SDK's types do not carry it yet.
+ */
+export type GuardDecision = Decision & { wouldVerdict?: "BLOCK" | "HOLD" };
+
 export interface ToolCallGuard {
-  auditToolCall(input: ToolCallInput): Promise<Decision>;
+  auditToolCall(input: ToolCallInput): Promise<GuardDecision>;
 }
 
 export interface GuardConfiguration {
@@ -121,62 +127,65 @@ export function assertJudgeEndpointAllowed(
   if (!fromEnv || !key || !flag) throw new GuardConfigError(REFUSED);
 }
 
-type JudgeActionFn = Atbash["judgeAction"];
+/** The organisation modes under which a verdict is recorded but not applied. */
+const NON_ENFORCING_MODES: ReadonlySet<string> = new Set(["shadow", "monitor", "off"]);
+
+/** The reason the SDK gives a call the judge recorded without judging yet (the fast acknowledgement). */
+const RECORDED_UNJUDGED = /^Recorded in (?:shadow|monitor|off) mode\b/;
 
 /**
- * A permit needs the judge's own `allow === true`, not only the SDK's mapping of it.
+ * A permit the organisation's enforcement mode granted, not the judge's verdict.
  *
- * SDK 0.9.1's `auditToolCall` returns `{ allow: true, verdict: "ALLOW" }` from its
- * `action_type === "allow"` branch without consulting the judge's `allow` field, so a judge answer
- * of `{ verdict: "ALLOW", action_type: "allow", allow: false }` was a permit even though the SDK's
- * own `canonicalAllow` says no. The raw judgment (`JudgeResult.allow`, which is `canonicalAllow`)
- * is observed here on the client that makes the call, for this call only, and a permit without it
- * is an ERROR deny. If a future SDK stops routing through `judgeAction`, nothing is observed and
- * every permit is denied - fail closed, and a test says so.
+ * The SDK applies the mode itself, and only a mode that arrived signed by the judge and bound to
+ * this call: under `shadow`, `monitor` or `off` a BLOCK or HOLD runs and is reported in
+ * `wouldVerdict`, and a call the judge only recorded (no verdict yet) runs at once. Nothing here
+ * can turn a deny into a permit; it describes a permit the SDK already made, for the local log.
  */
-export function requireJudgeAllow(client: Atbash): ToolCallGuard {
-  return {
-    async auditToolCall(input: ToolCallInput): Promise<Decision> {
-      const judged: unknown[] = [];
-      const original: JudgeActionFn = client.judgeAction;
-      client.judgeAction = async function (this: unknown, ...args: Parameters<JudgeActionFn>) {
-        const result = await original.apply(client, args);
-        judged.push(result);
-        return result;
-      };
-      let decision: Decision;
-      try {
-        decision = await client.auditToolCall(input);
-      } finally {
-        client.judgeAction = original;
-      }
-      if (decision.allow !== true || decision.verdict !== "ALLOW") return decision;
-      const [only, ...more] = judged;
-      const judgeAllowed =
-        more.length === 0 &&
-        typeof only === "object" &&
-        only !== null &&
-        (only as { allow?: unknown }).allow === true;
-      if (judgeAllowed) return decision;
-      return {
-        allow: false,
-        verdict: "ERROR",
-        reason: "the judge's answer did not grant permission (allow was not true)",
-        ...(decision.toolCallId === undefined ? {} : { toolCallId: decision.toolCallId }),
-      };
-    },
-  };
+export interface UnenforcedPermit {
+  /** `shadow`, `monitor` or `off`; `unknown` when the decision names no mode. */
+  mode: string;
+  /** What the judge decided, when it had decided by the time the call was permitted. */
+  wouldVerdict?: "BLOCK" | "HOLD";
+  /** True when the call was recorded and permitted before the judge reached a verdict. */
+  pending: boolean;
+  reason: string;
+  toolCallId?: string;
+}
+
+export function describeUnenforcedPermit(decision: GuardDecision): UnenforcedPermit | undefined {
+  if (decision.allow !== true || decision.verdict !== "ALLOW") return undefined;
+  const stated =
+    typeof decision.enforcementMode === "string"
+      ? decision.enforcementMode.trim().toLowerCase()
+      : "";
+  const mode = NON_ENFORCING_MODES.has(stated) ? stated : "unknown";
+  const reason = typeof decision.reason === "string" ? decision.reason : "";
+  const reference =
+    typeof decision.toolCallId === "string" && decision.toolCallId.trim() !== ""
+      ? { toolCallId: decision.toolCallId }
+      : {};
+  if (decision.wouldVerdict === "BLOCK" || decision.wouldVerdict === "HOLD") {
+    return { mode, wouldVerdict: decision.wouldVerdict, pending: false, reason, ...reference };
+  }
+  if (mode !== "unknown" && RECORDED_UNJUDGED.test(reason)) {
+    return { mode, pending: true, reason, ...reference };
+  }
+  return undefined;
 }
 
 export function createAtbashGuard(host: ControlHost = "claude"): ToolCallGuard {
   assertJudgeEndpointAllowed();
   const configuration = resolveGuardConfiguration(host);
-  return requireJudgeAllow(
-    Atbash.fromConfig({
-      failClosed: true,
-      ...(configuration.agentKey ? { agentKey: configuration.agentKey } : {}),
-      ...(configuration.orgName ? { orgName: configuration.orgName } : {}),
-      timeoutMs: resolveTimeoutMs(),
-    }),
-  );
+  // The SDK collapses the judge's answer itself: the most restrictive of `verdict`, `action_type`
+  // and `allow` wins, so an answer that does not grant `allow: true` is never a permit (the
+  // wrapper that re-checked this for SDK 0.9.x is gone; the built-hook tests keep the case).
+  // `requireEnforcement` refuses an answer that carries no enforcement decision at all, and the
+  // organisation's mode relaxes a verdict only when the judge signed it for this call.
+  return Atbash.fromConfig({
+    failClosed: true,
+    requireEnforcement: true,
+    ...(configuration.agentKey ? { agentKey: configuration.agentKey } : {}),
+    ...(configuration.orgName ? { orgName: configuration.orgName } : {}),
+    timeoutMs: resolveTimeoutMs(),
+  });
 }

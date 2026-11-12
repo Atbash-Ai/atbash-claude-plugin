@@ -2,10 +2,13 @@ import type { SetupBootstrap } from "./bootstrap.js";
 import { readHookInput } from "./io.js";
 import { deliverDecision, parsePreToolUseInput, serializeDeny } from "./protocol.js";
 import { evaluatePreToolUse, type GuardFactory } from "./runner.js";
+import { recordUnenforcedPermit } from "./shadow-log.js";
 
 export interface PreToolUseCliDependencies {
   createGuard?: GuardFactory;
   bootstrap?: SetupBootstrap;
+  /** Records a call the organisation's enforcement mode let through; defaults to the shadow log. */
+  recordUnenforced?: typeof recordUnenforcedPermit;
 }
 
 export async function executePreToolUse(
@@ -19,7 +22,20 @@ export async function executePreToolUse(
       dependencies.createGuard,
       dependencies.bootstrap,
     );
-    return outcome.allow ? "" : serializeDeny(outcome.reason);
+    if (!outcome.allow) return serializeDeny(outcome.reason);
+    if (outcome.unenforced !== undefined) {
+      // Shadow, monitor or off mode: the call runs, and the user is told what enforcement would
+      // have done. The permit is already decided; a record that fails must not turn it into a deny.
+      try {
+        (dependencies.recordUnenforced ?? recordUnenforcedPermit)(
+          outcome.unenforced,
+          input.tool_name,
+        );
+      } catch {
+        // the permit stands
+      }
+    }
+    return "";
   } catch {
     return serializeDeny("Atbash ERROR: the hook input was invalid.");
   }

@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { Decision, ToolCallInput } from "@atbash/sdk";
+import type { ToolCallInput } from "@atbash/sdk";
 
-import type { ToolCallGuard } from "../src/atbash/guard.js";
+import type { GuardDecision, ToolCallGuard } from "../src/atbash/guard.js";
 import { isSetupToolCall, NOT_SET_UP_REASON, type SetupBootstrap } from "../src/hook/bootstrap.js";
 import { evaluatePreToolUse } from "../src/hook/runner.js";
 import { makeHookInput } from "./fixtures.js";
 
-function guardReturning(decision: Decision, calls: ToolCallInput[] = []): ToolCallGuard {
+function guardReturning(decision: GuardDecision, calls: ToolCallInput[] = []): ToolCallGuard {
   return {
     async auditToolCall(input) {
       calls.push(input);
@@ -249,4 +249,53 @@ test("routes shell, patch, MCP, and other local tools through the guard", async 
     assert.deepEqual(outcome, { allow: true, source: "atbash" });
     assert.equal(calls[0]?.toolName, toolName);
   }
+});
+
+test("passes the enforcement mode through with a permit the mode granted", async () => {
+  const wouldBlock = await evaluatePreToolUse(makeHookInput(), () =>
+    guardReturning({
+      allow: true,
+      verdict: "ALLOW",
+      reason: "policy red line",
+      toolCallId: "call-123",
+      enforced: false,
+      enforcementMode: "shadow",
+      wouldVerdict: "BLOCK",
+    }),
+  );
+  assert.deepEqual(wouldBlock, {
+    allow: true,
+    source: "atbash",
+    unenforced: {
+      mode: "shadow",
+      wouldVerdict: "BLOCK",
+      pending: false,
+      reason: "policy red line",
+      toolCallId: "call-123",
+    },
+  });
+
+  const recorded = await evaluatePreToolUse(makeHookInput(), () =>
+    guardReturning({
+      allow: true,
+      verdict: "ALLOW",
+      reason: "Recorded in shadow mode; the verdict appears in the dashboard.",
+      enforced: false,
+      enforcementMode: "shadow",
+    }),
+  );
+  assert.equal(recorded.allow && recorded.unenforced?.pending, true);
+
+  // The mode never permits by itself: a deny stays a deny whatever it carries.
+  const denied = await evaluatePreToolUse(makeHookInput(), () =>
+    guardReturning({
+      allow: false,
+      verdict: "BLOCK",
+      reason: "policy red line",
+      enforcementMode: "shadow",
+      wouldVerdict: "BLOCK",
+    }),
+  );
+  assert.equal(denied.allow, false);
+  assert.equal(denied.allow ? undefined : denied.verdict, "BLOCK");
 });
