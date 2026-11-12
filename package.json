@@ -1,7 +1,7 @@
 {
   "name": "atbash-claude-plugin",
   "version": "0.5.0",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": true,
   "description": "Repository and Git-backed marketplace for the Atbash Safety plugin for Claude Code.",
   "type": "module",
